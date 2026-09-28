@@ -137,3 +137,115 @@ Three configurations compared on 4–5 representative surfaces: direct extrapola
 ## Why this project
 
 Demonstrates a constrained, auditable approach to AI-assisted CAD automation: deterministic engineering software owns the geometry, and a local LLM is used only for the reasoning that's genuinely hard to hand-code — recognizing and responding to novel failure patterns — while every action it recommends still passes through deterministic validation before touching the model.
+
+
+
+
+
+## Installation
+
+This project runs FreeCAD from a Python virtual environment. Because FreeCAD is
+not pip-installable, and because its compiled modules are ABI-locked to the
+Python version it was built against, the setup has a few specific steps.
+
+### 1. Install and extract FreeCAD
+
+FreeCAD cannot be installed via `pip`. It must be present on your system and
+reachable from Python. AppImage users should **extract** the AppImage rather
+than running it directly, because a running AppImage mounts itself in a
+temporary location that disappears when the process exits.
+
+```bash
+# Create a permanent location
+mkdir -p ~/.FreeCAD
+cd ~/.FreeCAD
+
+# Extract the AppImage (adjust the filename)
+~/Downloads/FreeCAD_*.AppImage --appimage-extract
+```
+
+This produces `~/.FreeCAD/squashfs-root/`, which contains FreeCAD's binaries,
+libraries, and its bundled Python interpreter.
+
+### 2. Create the virtual environment with FreeCAD's Python
+
+FreeCAD 1.1 AppImages are built against **Python 3.11**. If you create the
+venv with a newer interpreter (3.12+), importing FreeCAD will fail with:
+
+```
+ImportError: libFreeCADBase.so: undefined symbol: _Py_PackageContext
+```
+
+This is a binary compatibility issue: the C symbol signature changed between
+3.11 and 3.12, so the compiled FreeCAD modules cannot link against 3.12.
+
+Use FreeCAD's own bundled Python to create the venv:
+
+```bash
+cd /path/to/surface-extrapolation-assistant
+rm -rf .venv
+~/.FreeCAD/squashfs-root/usr/bin/python -m venv .venv
+source .venv/bin/activate
+
+# Should print 3.11.x
+python --version
+```
+
+### 3. Configure the FreeCAD library path
+
+Edit `config.yaml` and set the path to FreeCAD's library directory:
+
+```yaml
+freecad:
+  lib_path: "/home/<you>/.FreeCAD/squashfs-root/usr/lib"
+```
+
+Alternatively, set the `FREECAD_LIB_PATH` environment variable:
+
+```bash
+export FREECAD_LIB_PATH="/home/<you>/.FreeCAD/squashfs-root/usr/lib"
+```
+
+### 4. Install the project
+
+```bash
+pip install -e ".[dev]"
+```
+
+### 5. Verify the setup
+
+```bash
+python -c "
+from surface_assistant import freecad_setup
+import FreeCAD
+import Part
+box = Part.makeBox(10, 10, 10)
+print('FreeCAD version:', FreeCAD.Version()[0], FreeCAD.Version()[1])
+print('Faces:', len(box.Faces))
+from surface_assistant.topology import fingerprint_face
+print('Fingerprint:', fingerprint_face(box.Faces[0]).short())
+"
+```
+
+Expected output:
+
+```
+FreeCAD version: 1 1
+Faces: 6
+Fingerprint: Plane|A=100.000|COM=(0.00,5.00,5.00)
+```
+
+### Optional: Local LLM (Ollama)
+
+The geometry pipeline runs entirely without an LLM. To enable failure
+diagnosis, install [Ollama](https://ollama.com) and pull a model:
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+### Usage
+
+```bash
+surface-assistant inspect model.step --boundary boundary.step
+```

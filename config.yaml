@@ -1,0 +1,33 @@
+# Surface Extrapolation Assistant configuration
+
+freecad:
+  # Path to FreeCAD's bin/ or lib/ directory.
+  # Examples:
+  #   Windows: "C:\\Program Files\\FreeCAD 1.0\\bin"
+  #   Linux:   "/usr/lib/freecad/lib"
+  #   macOS:   "/Applications/FreeCAD.app/Contents/Resources/lib"
+  # lib_path: "/usr/lib/freecad/lib"   # <-- set this to your FreeCAD install
+  lib_path: "/home/gion/.FreeCAD/squashfs-root/usr/lib"
+
+
+extrapolation:
+  target_distance_mm: 100.0
+  tolerance_percent: 2.0        # acceptable deviation on target distance
+  max_correction_passes: 1      # calibration correction attempts
+  initial_ratio: 1.0            # starting UV extension ratio
+
+join:
+  sewing_tolerance_mm: 0.04     # your CATIA join tolerance
+  refine_shape: true
+
+llm:
+  enabled: true
+  provider: "lmstudio"            # "ollama" or "lmstudio"
+  endpoint: "http://localhost:11434"
+  model: "qwen2.5-coder:7b"
+  timeout_seconds: 60
+  temperature: 0.2
+
+logging:
+  level: "INFO"
+  log_dir: "logs"

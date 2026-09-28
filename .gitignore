@@ -54,30 +54,21 @@ prof/
 
 *.pyc
 
-# Data (never commit datasets or generated models)
-data/
-datasets/
-*.step
-*.stp
-*.stl
-*.iges
-*.igs
-*.brep
-*.h5
-*.svg
-*.npy
-*.json
-*.zip
-
 
 # FreeCAD temp files
 *.FCStd1
 *.FCStd2
+*.FCStd3
 *.bak
 
 # Model / large test files (optional — uncomment if needed)
-# *.step
-# *.stp
+*.step
+*.stp
 examples/*.FCStd
 
+
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
 
