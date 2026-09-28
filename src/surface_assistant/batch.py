@@ -130,6 +130,7 @@ def run_batch(
     BatchReport
         Aggregated results for the whole surface.
     """
+
     report = BatchReport(
         step_file=str(step_file),
         boundary_file=str(boundary_file),
@@ -137,30 +138,43 @@ def run_batch(
         tolerance_percent=tolerance_percent,
     )
 
-    # Load surface + boundary
-    _, shape = load_step(step_file, doc_name=doc_name)
-    _, boundary = load_boundary(boundary_file, doc_name="_BoundaryCurve")
+    doc_surface = None
+    doc_boundary = None
 
-    # Identify boundary faces
-    boundary_faces: list[BoundaryFace] = get_boundary_faces(shape, boundary)
-    report.total_faces = len(boundary_faces)
-
-    # Extrapolate each face independently
-    for bf in boundary_faces:
-        result = extrapolate_face(
-            face=bf.face,
-            distance_mm=target_mm,
-            direction=direction,          # type: ignore[arg-type]
-            tolerance_percent=tolerance_percent,
-            max_correction_passes=max_correction_passes,
-            face_index=bf.index,
+    try:
+        doc_surface, shape = load_step(step_file, doc_name=doc_name)
+        doc_boundary, boundary = load_boundary(
+            boundary_file, doc_name="_BoundaryCurve"
         )
-        report.results.append(result)
 
-        if result.status in (
-            ExtrapolationStatus.SUCCESS,
-            ExtrapolationStatus.PARTIAL,
-        ) and result.extended_face is not None:
-            report.extended_faces.append(result.extended_face)
+        boundary_faces: list[BoundaryFace] = get_boundary_faces(shape, boundary)
+        report.total_faces = len(boundary_faces)
 
-    return report
+        for bf in boundary_faces:
+            result = extrapolate_face(
+                face=bf.face,
+                distance_mm=target_mm,
+                direction=direction,  # type: ignore[arg-type]
+                tolerance_percent=tolerance_percent,
+                max_correction_passes=max_correction_passes,
+                face_index=bf.index,
+            )
+            report.results.append(result)
+
+            if result.status in (
+                ExtrapolationStatus.SUCCESS,
+                ExtrapolationStatus.PARTIAL,
+            ) and result.extended_face is not None:
+                report.extended_faces.append(result.extended_face)
+
+        return report
+
+    finally:
+        for doc in (doc_boundary, doc_surface):
+            if doc is None:
+                continue
+            try:
+                FreeCAD.closeDocument(doc.Name)
+            except Exception:
+                # Document already closed or never created — ignore.
+                pass

@@ -107,38 +107,6 @@ def _measure_uv_extent(face: Part.Face) -> tuple[float, float]:
     except Exception:
         return (1.0, 1.0)
     
-    # try:
-    #     u_min, u_max, v_min, v_max = face.ParameterRange
-    # except Exception:
-    #     return (1.0, 1.0)
-
-    # Sample the four boundary isoparametric curves.
-    def curve_length(fixed_u: float | None, fixed_v: float | None) -> float:
-        try:
-            if fixed_u is not None:
-                curve = face.Surface.uIso(fixed_u)
-                p0 = curve.value(v_min)
-                p1 = curve.value(v_max)
-            else:
-                curve = face.Surface.vIso(fixed_v)
-                p0 = curve.value(u_min)
-                p1 = curve.value(u_max)
-            # Rough length: straight-line distance. Good enough for ratio.
-            return (p1 - p0).Length
-        except Exception:
-            return 1.0
-
-    u_extent = max(
-        curve_length(fixed_u=u_min, fixed_v=None),
-        curve_length(fixed_u=u_max, fixed_v=None),
-    )
-    v_extent = max(
-        curve_length(fixed_u=None, fixed_v=v_min),
-        curve_length(fixed_u=None, fixed_v=v_max),
-    )
-
-    return (max(u_extent, 1e-6), max(v_extent, 1e-6))
-
 
 def _direction_to_ratios(direction: Direction, ratio: float) -> dict[str, float]:
     """Map a direction request to the four Surface::Extend ratio properties."""
