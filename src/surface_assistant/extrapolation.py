@@ -62,19 +62,25 @@ class ExtrapolationResult:
         return abs(self.achieved_mm - self.requested_mm) / self.requested_mm * 100.0
 
     def short(self) -> str:
+        """Human-readable one-line summary, safe against missing fields."""
         if self.status == ExtrapolationStatus.SUCCESS:
+            ach = f"{self.achieved_mm:.2f}" if self.achieved_mm is not None else "?"
+            ratio = f"{self.ratio_used:.3f}" if self.ratio_used is not None else "?"
             return (
                 f"OK face={self.face_index} "
                 f"req={self.requested_mm:.2f}mm "
-                f"ach={self.achieved_mm:.2f}mm "
-                f"ratio={self.ratio_used:.3f}"
+                f"ach={ach}mm "
+                f"ratio={ratio}"
             )
         if self.status == ExtrapolationStatus.PARTIAL:
+            err = self.achieved_percent_error
+            err_str = f"{err:.2f}" if err is not None else "?"
+            ach = f"{self.achieved_mm:.2f}" if self.achieved_mm is not None else "?"
             return (
                 f"PARTIAL face={self.face_index} "
                 f"req={self.requested_mm:.2f}mm "
-                f"ach={self.achieved_mm:.2f}mm "
-                f"err={self.achieved_percent_error:.2f}%"
+                f"ach={ach}mm "
+                f"err={err_str}%"
             )
         return f"FAILED face={self.face_index} err={self.error_message}"
 
@@ -95,9 +101,16 @@ def _measure_uv_extent(face: Part.Face) -> tuple[float, float]:
     (u_extent_mm, v_extent_mm)
     """
     try:
-        u_min, u_max, v_min, v_max = face.ParameterRange
+        bb = face.BoundBox
+        dims = sorted([bb.XLength, bb.YLength, bb.ZLength], reverse=True)
+        return (max(dims[0], 1e-6), max(dims[1], 1e-6))
     except Exception:
         return (1.0, 1.0)
+    
+    # try:
+    #     u_min, u_max, v_min, v_max = face.ParameterRange
+    # except Exception:
+    #     return (1.0, 1.0)
 
     # Sample the four boundary isoparametric curves.
     def curve_length(fixed_u: float | None, fixed_v: float | None) -> float:

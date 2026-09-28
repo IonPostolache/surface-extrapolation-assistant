@@ -1,4 +1,4 @@
-"""Minimal CLI — Day 1: load STEP + show boundary faces."""
+"""Surface Extrapolation Assistant — CLI."""
 
 from __future__ import annotations
 
@@ -11,9 +11,12 @@ from rich.table import Table
 
 from surface_assistant import __version__
 from surface_assistant.step_io import load_step, load_boundary
-from surface_assistant.topology import get_boundary_faces, describe_faces
+from surface_assistant.topology import get_boundary_faces
 
-app = typer.Typer(add_completion=False, help="Surface Extrapolation Assistant")
+app = typer.Typer(
+    add_completion=False,
+    help="Surface Extrapolation Assistant",
+)
 console = Console()
 
 
@@ -64,6 +67,36 @@ def inspect(
         )
 
     console.print(table)
+
+
+@app.command()
+def run(
+    step_file: Path = typer.Argument(..., help="Surface STEP file"),
+    boundary_file: Path = typer.Option(
+        ..., "--boundary", "-b", help="Boundary curve STEP file"
+    ),
+    distance: float = typer.Option(
+        100.0, "--distance", "-d", help="Target extrapolation distance in mm"
+    ),
+    tolerance: float = typer.Option(
+        2.0, "--tolerance", "-t", help="Tolerance as a percentage"
+    ),
+    direction: str = typer.Option(
+        "all", "--direction", help="U+, U-, V+, V-, or all"
+    ),
+) -> None:
+    """Batch-extrapolate all boundary faces of a surface."""
+    from surface_assistant.batch import run_batch
+
+    console.rule("[bold]Batch extrapolation")
+    report = run_batch(
+        step_file=step_file,
+        boundary_file=boundary_file,
+        target_mm=distance,
+        tolerance_percent=tolerance,
+        direction=direction,
+    )
+    console.print(report.summary())
 
 
 def main() -> None:
