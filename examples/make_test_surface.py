@@ -56,8 +56,6 @@ def build_bent_plate():
     #   y(t) = base_depth + bend_radius * sin(t)
     #   z(t) = bend_radius - bend_radius * cos(t)
 
-    import Part as P
-
     def arc_point(t: float) -> Vector:
         return Vector(
             0.0,
@@ -81,15 +79,6 @@ def build_bent_plate():
     arc = Part.ArcOfCircle(circle, -math.pi / 2, -math.pi / 2 + angle_rad)
     arc_edge = arc.toShape()
 
-
-    # Build the arc as an edge
-    # arc_edge = P.Edge.makeCircle(
-    #     radius=bend_radius,
-    #     center=Vector(0, base_depth, bend_radius),
-    #     normal=Vector(1, 0, 0),
-    #     angle1=-math.pi / 2,
-    #     angle2=-math.pi / 2 + angle_rad,
-    # )
 
     # Extrude the arc along X to make the flange face
     flange = arc_edge.extrude(Vector(base_length, 0, 0))
@@ -139,18 +128,6 @@ def build_boundary(shell: Part.Shape):
                     boundary_edges.append(e)
         return Part.Compound(boundary_edges)
 
-
-
-# def export(shape: Part.Shape, path: Path) -> None:
-#     # Wrap in a document object first, then export via the doc — this
-#     # preserves the shell topology better than Part.export on a raw Shape.
-#     doc = FreeCAD.newDocument("_ExportDoc")
-#     obj = doc.addObject("Part::Feature", "Surface")
-#     obj.Shape = shape
-#     doc.recompute()
-#     Part.export([obj], str(path))
-#     FreeCAD.closeDocument(doc.Name)
-#     print(f"Wrote {path}")
 
 def export(shape: Part.Shape, path: Path) -> None:
     doc = FreeCAD.newDocument("_ExportDoc")
