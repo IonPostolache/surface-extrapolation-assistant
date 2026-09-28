@@ -32,6 +32,7 @@ from surface_assistant.extrapolation import (
 )
 from surface_assistant.step_io import load_step, load_boundary
 from surface_assistant.topology import BoundaryFace, get_boundary_faces
+from surface_assistant.join import JoinResult, join_faces, JoinStatus
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,8 @@ class BatchReport:
 
     # Populated after the run
     extended_faces: list[Part.Face] = field(default_factory=list)
+
+    join_result: JoinResult | None = None
 
     @property
     def successes(self) -> list[ExtrapolationResult]:
@@ -87,6 +90,9 @@ class BatchReport:
             "",
             "Per-face results:",
         ]
+        if self.join_result is not None:
+            lines.append("")
+            lines.append(f"  {self.join_result.short()}")
         for r in self.results:
             lines.append(f"  {r.short()}")
         return "\n".join(lines)
@@ -166,6 +172,13 @@ def run_batch(
                 ExtrapolationStatus.PARTIAL,
             ) and result.extended_face is not None:
                 report.extended_faces.append(result.extended_face)
+
+        # Join the extended faces into a shell
+        if report.extended_faces:
+            report.join_result = join_faces(
+                report.extended_faces,
+                tolerance_mm=0.04,  # your CATIA join tolerance
+            )
 
         return report
 

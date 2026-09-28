@@ -165,3 +165,62 @@ def describe_faces(faces: Iterable[BoundaryFace]) -> str:
             f"(shared edges: {bf.shared_edge_count})"
         )
     return "\n".join(lines)
+
+def classify_face_edges(
+    face: Part.Face,
+    all_faces: list[Part.Face],
+    tolerance: float = 1e-3,
+) -> dict[int, str]:
+    """For each edge of `face`, return 'free' or 'shared'.
+
+    An edge is 'shared' if any *other* face in all_faces has a matching
+    edge (same length and same midpoint within tolerance).
+    """
+    result: dict[int, str] = {}
+    for i, edge in enumerate(face.Edges):
+        e_len = edge.Length
+        e_mid = edge.CenterOfMass
+        shared = False
+        for other in all_faces:
+            if other.isSame(face):
+                continue
+            for oe in other.Edges:
+                if (
+                    abs(oe.Length - e_len) < tolerance
+                    and (oe.CenterOfMass - e_mid).Length < tolerance
+                ):
+                    shared = True
+                    break
+            if shared:
+                break
+        result[i] = "shared" if shared else "free"
+    return result
+
+def infer_extension_direction(
+    face: Part.Face,
+    all_faces: list[Part.Face],
+    tolerance: float = 1e-3,
+) -> str:
+    """Return a Surface::Extend direction string based on free edges.
+
+    Heuristic:
+        - If the face's U+ edge is free and U- is shared → "U+"
+        - If U- is free and U+ is shared → "U-"
+        - If both U edges are free → "U+U-" (extend both)
+        - If both U edges are shared → fall through to V
+        - Same logic for V
+
+    For a face with 3 free edges and 1 shared edge, this picks the
+    correct two-direction extension.
+    """
+    # This is where the geometry gets fiddly. A simpler first pass:
+    # if exactly one edge is shared, extend away from it.
+    classifications = classify_face_edges(face, all_faces, tolerance)
+    shared_count = sum(1 for v in classifications.values() if v == "shared")
+    if shared_count == 0:
+        return "all"
+    if shared_count == len(classifications):
+        return "none"
+    # For now: extend in "all" but the join step will need to handle
+    # the shared-edge collision by splitting.
+    return "all"

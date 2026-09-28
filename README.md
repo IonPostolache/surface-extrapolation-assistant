@@ -249,3 +249,9 @@ ollama pull qwen2.5-coder:7b
 ```bash
 surface-assistant inspect model.step --boundary boundary.step
 ```
+
+
+<!-- ====================================================
+test
+
+surface-assistant run examples/test_surface.step --boundary examples/test_boundary.step --distance 20
