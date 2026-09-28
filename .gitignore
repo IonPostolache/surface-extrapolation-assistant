@@ -1,0 +1,83 @@
+# Packaging debris
+dist/
+*.egg-info/
+
+# Testing debris
+__pycache__/
+
+# Coverage debris
+.coverage
+htmlcov/
+
+# Docs debris
+docs/_build/
+
+.continueignore
+
+
+
+# Test fixtures override the patterns above
+!tests/assets/**
+
+#mypy cache
+.mypy_cache
+.cache/
+build
+build/
+
+
+#Environments
+.env
+.venv
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+#ide debris
+.vscode
+.vscode/
+
+
+# Profiling debris.
+prof/
+
+# MacOS cruft
+.DS_Store
+
+
+*.py[cod]
+.pytest_cache/
+
+
+*.pyc
+
+# Data (never commit datasets or generated models)
+data/
+datasets/
+*.step
+*.stp
+*.stl
+*.iges
+*.igs
+*.brep
+*.h5
+*.svg
+*.npy
+*.json
+*.zip
+
+
+# FreeCAD temp files
+*.FCStd1
+*.FCStd2
+*.bak
+
+# Model / large test files (optional — uncomment if needed)
+# *.step
+# *.stp
+examples/*.FCStd
+
+
