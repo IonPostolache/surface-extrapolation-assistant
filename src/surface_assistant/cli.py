@@ -81,18 +81,18 @@ def run(
     tolerance: float = typer.Option(
         2.0, "--tolerance", "-t", help="Tolerance as a percentage"
     ),
-    direction: str = typer.Option(
-        "all", "--direction", help="U+, U-, V+, V-, or all"
-    ),
     output: Path = typer.Option(
         None, "--output", "-o",
-        help="Save extended faces + join result to this .FCStd file",
+        help="Save extended faces to this .FCStd file",
     ),
 ) -> None:
-    """Batch-extrapolate all boundary faces of a surface."""
-    from surface_assistant.batch import run_batch
-    from surface_assistant.io import save_extended_faces  # new module
+    """Batch-extrapolate all boundary faces of a surface.
 
+    Directions are inferred automatically: each face extends only along
+    the UV sides that touch the user-supplied boundary curve.
+    """
+    from surface_assistant.batch import run_batch
+    from surface_assistant.io import save_extended_faces
 
     console.rule("[bold]Batch extrapolation")
     report = run_batch(
@@ -100,7 +100,6 @@ def run(
         boundary_file=boundary_file,
         target_mm=distance,
         tolerance_percent=tolerance,
-        direction=direction,
     )
     console.print(report.summary())
 

@@ -1,13 +1,5 @@
 # Recommended Plan — Surface Extrapolation Assistant for FreeCAD
 
-## Why this version differs from the four drafts
-
-- **`Surface::Extend` is ratio-based, not distance-based.** Its real parameters are `ExtendUNeg/UPos` and `ExtendVNeg/VPos` — fractions of the face's existing UV extent — not millimetres. Drafts 1 and 2 present `extrapolate_face(face, distance_mm=100.0)` as if that's a native call; it isn't. You'll need a calibration step (measure current edge length, compute the ratio that yields ~100 mm, extend, re-measure, correct) before you can honestly claim a `distance_mm` API. This is real work — give it its own time slot instead of hiding it inside Day 1.
-- **Topological naming instability is a first-class risk, not a footnote.** Only Draft 4 names it. If any face gets recomputed, refreshed, or the document re-touched, `Face7` today is not `Face7` tomorrow. Track faces by geometric fingerprint (surface type + center of mass + bounding box + area) from Day 1, not as a Day-6 patch.
-- **Joining/sewing extended faces back into one continuous surface is plausibly the hardest part of this project** — harder than the LLM integration — because `Part::Fuse` has no tolerance parameter and extended BSpline patches rarely line up cleanly. Give it 1.5 days, not a bullet point.
-- **9 days, not 7.** A rushed Day-6 "evaluation" with N=3 toy surfaces won't survive five minutes of interview questioning. Fewer, more defensible claims beat a padded benchmark table.
-- **The offline-first design from Draft 2 is kept**: the deterministic core must run and produce a usable result with the LLM completely absent. That's the difference between "CAD tool with AI-assisted diagnostics" and "AI toy that touches CAD," and it's the framing that will read as credible to a hiring manager who knows CATIA.
-
 ## Plan (9 working days)
 
 **Day 1 — Load, traverse, identify boundary faces**
@@ -56,7 +48,7 @@
 
 **Day 8 — Documentation + limitations**
 - Write the architecture doc and the "what the LLM does / doesn't do" table.
-- Write "Known Limitations" honestly (see README below) — this is the section technical interviewers actually read.
+- Write "Known Limitations" honestly (see README below).
 - Clean up inline docs and the repo structure.
 
 **Day 9 — Portfolio packaging**

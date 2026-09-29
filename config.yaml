@@ -17,7 +17,7 @@ extrapolation:
   initial_ratio: 1.0            # starting UV extension ratio
 
 join:
-  sewing_tolerance_mm: 0.04     # your CATIA join tolerance
+  sewing_tolerance_mm: 0.04     # your join tolerance
   refine_shape: true
 
 llm:

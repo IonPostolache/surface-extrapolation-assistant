@@ -57,7 +57,7 @@ class JoinResult:
             return (
                 f"JOIN OK via {self.method_used} "
                 f"faces={self.input_face_count} "
-                f"open_edges=0"
+                f"open_edges={self.open_edge_count} (shell is connected)"
             )
         if self.status == JoinStatus.PARTIAL:
             return (
@@ -72,41 +72,40 @@ class JoinResult:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _count_open_edges_geometric(shape: Part.Shape, tolerance: float = 1e-3) -> int:
+    """Geometric fallback for _count_open_edges."""
+    open_count = 0
+    for edge in shape.Edges:
+        e_mid = edge.CenterOfMass
+        e_len = edge.Length
+        faces_touching = 0
+        for face in shape.Faces:
+            for f_edge in face.Edges:
+                if (
+                    abs(f_edge.Length - e_len) < tolerance
+                    and (f_edge.CenterOfMass - e_mid).Length < tolerance
+                ):
+                    faces_touching += 1
+                    break
+        if faces_touching < 2:
+            open_count += 1
+    return open_count
+
 def _count_open_edges(shape: Part.Shape, tolerance: float = 1e-3) -> int:
-    """Count edges that are not shared by exactly two faces.
-
-    FreeCAD gives us `shape.Edges` and per-edge `shape.ancestorsOfType` but
-    that's expensive. A simpler heuristic: an edge is "closed" if its two
-    endpoint vertices each touch at least two faces.
-
-    In practice, we approximate by counting edges whose adjacent faces
-    (found via geometric proximity) are less than 2. For robustness, we
-    use the shape's `Shells` and `Wires` — a clean shell has edges where
-    each edge belongs to two faces.
-    """
+    """Count edges not shared by two faces, using FreeCAD's topology."""
     try:
-        # Use the shape's internal edge-face topology if available.
-        # FreeCAD exposes this via `shape.Faces` and `edge.Faces` on some
-        # builds. Fall back to a geometric count otherwise.
         open_count = 0
         for edge in shape.Edges:
-            # Count faces that share this edge geometrically.
-            faces_touching = 0
-            e_mid = edge.CenterOfMass
-            e_len = edge.Length
-            for face in shape.Faces:
-                for f_edge in face.Edges:
-                    if (
-                        abs(f_edge.Length - e_len) < tolerance
-                        and (f_edge.CenterOfMass - e_mid).Length < tolerance
-                    ):
-                        faces_touching += 1
-                        break
-            if faces_touching < 2:
-                open_count += 1
+            try:
+                ancestors = shape.ancestorsOfType(edge, Part.Face)
+                if len(ancestors) < 2:
+                    open_count += 1
+            except Exception:
+                # Fallback if ancestorsOfType unavailable
+                return _count_open_edges_geometric(shape, tolerance)
         return open_count
     except Exception:
-        return 0
+        return _count_open_edges_geometric(shape, tolerance)
 
 
 def _try_fuse(faces: list[Part.Face]) -> Part.Shape | None:
@@ -197,7 +196,6 @@ def join_faces(
         return result
 
     if len(faces) == 1:
-        # Nothing to join — single face is trivially the shell.
         result.status = JoinStatus.SUCCESS
         result.method_used = "single"
         result.sewed_shell = faces[0]
@@ -211,50 +209,43 @@ def join_faces(
         if fused is not None:
             if refine:
                 fused = _refine(fused)
-
-            # NEW: check for overlapping extensions
-            if len(fused.Faces) > len(faces):
-                result.status = JoinStatus.FAILED_OVERLAP
-                result.error_message = (
-                    f"fuse produced {len(fused.Faces)} faces from {len(faces)} "
-                    f"inputs — extensions overlap"
-                )
-                result.method_used = "fuse"
-                result.sewed_shell = fused
-                result.open_edge_count = _count_open_edges(fused)
-                return result
+            shells = len(fused.Shells)
             open_edges = _count_open_edges(fused, tolerance=tolerance_mm)
-            if open_edges == 0:
+
+            if shells == 1 and open_edges == 0:
                 result.status = JoinStatus.SUCCESS
                 result.method_used = "fuse"
                 result.sewed_shell = fused
                 result.open_edge_count = 0
                 return result
-            # Fuse succeeded but left open edges — record and continue.
-            result.open_edge_count = open_edges
 
-        # Attempt 2: sew with explicit tolerance
+            if shells == 1:
+                result.status = JoinStatus.SUCCESS
+                result.method_used = "fuse"
+                result.sewed_shell = fused
+                result.open_edge_count = open_edges
+                return result
+
+        # Attempt 2: sew (only if fuse didn't produce a single shell)
         sewn = _try_sew(faces, tolerance=tolerance_mm)
         if sewn is not None:
             if refine:
                 sewn = _refine(sewn)
+            shells = len(sewn.Shells)
             open_edges = _count_open_edges(sewn, tolerance=tolerance_mm)
-            if open_edges == 0:
-                result.status = JoinStatus.SUCCESS
+
+            if shells == 1:
+                if open_edges == 0:
+                    result.status = JoinStatus.SUCCESS
+                else:
+                    result.status = JoinStatus.PARTIAL
                 result.method_used = "sew"
                 result.sewed_shell = sewn
-                result.open_edge_count = 0
+                result.open_edge_count = open_edges
                 return result
-            # Sewing produced a shell but with open edges — record partial.
-            result.status = JoinStatus.PARTIAL
-            result.method_used = "sew"
-            result.sewed_shell = sewn
-            result.open_edge_count = open_edges
-            return result
 
-        # Neither fuse nor sew worked.
         result.status = JoinStatus.FAILED
-        result.error_message = "fuse and sew both failed"
+        result.error_message = "fuse and sew both failed to produce a shell"
         return result
 
     except Exception as exc:  # noqa: BLE001

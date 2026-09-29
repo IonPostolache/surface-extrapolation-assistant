@@ -33,6 +33,7 @@ from surface_assistant.extrapolation import (
 from surface_assistant.step_io import load_step, load_boundary
 from surface_assistant.topology import BoundaryFace, get_boundary_faces
 from surface_assistant.join import JoinResult, join_faces, JoinStatus
+from surface_assistant.topology import infer_uv_directions, UVDirections
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,8 @@ class BatchReport:
     extended_faces: list[Part.Face] = field(default_factory=list)
 
     join_result: JoinResult | None = None
+
+    face_directions: dict[int, str] = field(default_factory=dict)
 
     @property
     def successes(self) -> list[ExtrapolationResult]:
@@ -94,7 +97,9 @@ class BatchReport:
             lines.append("")
             lines.append(f"  {self.join_result.short()}")
         for r in self.results:
-            lines.append(f"  {r.short()}")
+            dir_str = self.face_directions.get(r.face_index, "?")
+            lines.append(f"  {r.short()}  [dirs: {dir_str}]")
+
         return "\n".join(lines)
 
 
@@ -155,12 +160,18 @@ def run_batch(
 
         boundary_faces: list[BoundaryFace] = get_boundary_faces(shape, boundary)
         report.total_faces = len(boundary_faces)
+        all_faces = [bf.face for bf in boundary_faces]
+
 
         for bf in boundary_faces:
+            # Infer which UV sides of this face touch the free boundary
+            dirs = infer_uv_directions(bf.face, all_faces, tolerance=1e-3)
+            report.face_directions[bf.index] = dirs.describe()
+
             result = extrapolate_face(
                 face=bf.face,
                 distance_mm=target_mm,
-                direction=direction,  # type: ignore[arg-type]
+                directions=dirs,
                 tolerance_percent=tolerance_percent,
                 max_correction_passes=max_correction_passes,
                 face_index=bf.index,
@@ -177,7 +188,7 @@ def run_batch(
         if report.extended_faces:
             report.join_result = join_faces(
                 report.extended_faces,
-                tolerance_mm=0.04,  # your CATIA join tolerance
+                tolerance_mm=0.04,  # your join tolerance
             )
 
         return report

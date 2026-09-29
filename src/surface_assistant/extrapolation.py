@@ -23,6 +23,7 @@ from enum import Enum
 from typing import Literal
 
 from surface_assistant import freecad_setup  # noqa: F401
+from surface_assistant.topology import UVDirections
 
 import FreeCAD  # type: ignore
 import Part     # type: ignore
@@ -108,60 +109,46 @@ def _measure_uv_extent(face: Part.Face) -> tuple[float, float]:
         return (1.0, 1.0)
     
 
-def _direction_to_ratios(direction: Direction, ratio: float) -> dict[str, float]:
-    """Map a direction request to the four Surface::Extend ratio properties."""
-    r = {
-        "ExtendUNeg": 0.0,
-        "ExtendUPos": 0.0,
-        "ExtendVNeg": 0.0,
-        "ExtendVPos": 0.0,
+def _directions_to_ratios(directions: UVDirections, ratio: float) -> dict[str, float]:
+    """Map a UVDirections to the four Surface::Extend ratio properties.
+
+    Also returns the symmetry settings needed to prevent unwanted
+    extension on the opposite side of each direction.
+    """
+    return {
+        "ExtendUNeg": ratio if directions.u_neg else 0.0,
+        "ExtendUPos": ratio if directions.u_pos else 0.0,
+        "ExtendVNeg": ratio if directions.v_neg else 0.0,
+        "ExtendVPos": ratio if directions.v_pos else 0.0,
     }
-    if direction == "U+":
-        r["ExtendUPos"] = ratio
-    elif direction == "U-":
-        r["ExtendUNeg"] = ratio
-    elif direction == "V+":
-        r["ExtendVPos"] = ratio
-    elif direction == "V-":
-        r["ExtendVNeg"] = ratio
-    elif direction == "all":
-        r["ExtendUNeg"] = ratio
-        r["ExtendUPos"] = ratio
-        r["ExtendVNeg"] = ratio
-        r["ExtendVPos"] = ratio
-    return r
 
 
 def _apply_extend(
     doc: FreeCAD.Document,
     source_face: Part.Face,
     ratio: float,
-    direction: Direction,
+    directions: UVDirections,
     tolerance: float,
     sample_u: int = 32,
     sample_v: int = 32,
 ) -> Part.Face:
-    """Create a Surface::Extend object and return the extended face.
+    """Create a Surface::Extend object with per-side ratios."""
 
-    Surface::Extend requires a LinkSub reference to a face of a
-    document object, not a raw Part.Face. So we first add a
-    Part::Feature to the document containing our face, then
-    reference its "Face1" sub-element.
-    """
-    # Step 1: Add the source face as a document object so it has
-    # addressable sub-elements ("Face1").
     source_obj = doc.addObject("Part::Feature", "SourceFace")
     source_obj.Shape = Part.Shape([source_face])
     doc.recompute()
 
-    # Step 2: Create the Extend object and set the LinkSub.
     obj = doc.addObject("Surface::Extend", "Extend")
-    obj.Face = [source_obj, "Face1"]  # LinkSub format
+    obj.Face = [source_obj, "Face1"]
     obj.Tolerance = tolerance
     obj.SampleU = sample_u
     obj.SampleV = sample_v
 
-    ratios = _direction_to_ratios(direction, ratio)
+    # CRITICAL: disable symmetry so only the chosen sides extend
+    obj.ExtendUSymetric = False
+    obj.ExtendVSymetric = False
+
+    ratios = _directions_to_ratios(directions, ratio)
     for prop, value in ratios.items():
         setattr(obj, prop, value)
 
@@ -210,36 +197,19 @@ def extrapolate_face(
     face: Part.Face,
     distance_mm: float,
     *,
-    direction: Direction = "all",
+    directions: UVDirections | None = None,
     tolerance_percent: float = 2.0,
     max_correction_passes: int = 1,
     freecad_tolerance: float = 0.1,
     face_index: int = -1,
     doc_name: str = "_ExtrapolationDoc",
 ) -> ExtrapolationResult:
-    """Extrapolate a single face by ~`distance_mm` in the given direction.
+    """Extrapolate a single face by ~`distance_mm`.
 
-    Parameters
-    ----------
-    face : Part.Face
-        The face to extend.
-    distance_mm : float
-        Target extension distance in millimetres.
-    direction : Direction
-        "U+", "U-", "V+", "V-", or "all".
-    tolerance_percent : float
-        Acceptable deviation from `distance_mm`, as a percentage.
-    max_correction_passes : int
-        How many ratio-correction passes to attempt after the first try.
-    freecad_tolerance : float
-        Geometric tolerance passed to Surface::Extend.
-    face_index : int
-        For reporting only. Set by the caller.
-
-    Returns
-    -------
-    ExtrapolationResult
+    If `directions` is None, falls back to extending all four sides
+    (the old behavior). If provided, only the specified sides extend.
     """
+
     if distance_mm <= 0:
         return ExtrapolationResult(
             status=ExtrapolationStatus.FAILED,
@@ -248,25 +218,34 @@ def extrapolate_face(
             error_message="distance_mm must be positive",
         )
 
+    # Default: extend all sides (old behavior)
+    if directions is None:
+        directions = UVDirections(u_neg=True, u_pos=True, v_neg=True, v_pos=True)
+
+    if not directions.any:
+        return ExtrapolationResult(
+            status=ExtrapolationStatus.FAILED,
+            face_index=face_index,
+            requested_mm=distance_mm,
+            error_message="no UV directions to extend (face does not touch boundary)",
+        )
+
     doc = FreeCAD.newDocument(doc_name)
 
     try:
         u_extent, v_extent = _measure_uv_extent(face)
 
-        # For "all", use the smaller extent so the ratio is conservative.
-        if direction == "all":
-            base_extent = min(u_extent, v_extent)
-        elif direction in ("U+", "U-"):
-            base_extent = u_extent
-        else:
-            base_extent = v_extent
+        # Compute a base extent from the directions that will actually extend
+        extents = []
+        if directions.u_neg or directions.u_pos:
+            extents.append(u_extent)
+        if directions.v_neg or directions.v_pos:
+            extents.append(v_extent)
+        base_extent = min(extents) if extents else 1.0
 
         ratio = distance_mm / base_extent
 
-        # First attempt
-        extended = _apply_extend(
-            doc, face, ratio, direction, freecad_tolerance
-        )
+        extended = _apply_extend(doc, face, ratio, directions, freecad_tolerance)
         achieved = _measure_extension(face, extended)
 
         result = ExtrapolationResult(
@@ -279,26 +258,21 @@ def extrapolate_face(
             extended_face=extended,
         )
 
-        # Correction passes
         for _ in range(max_correction_passes):
             if achieved <= 0:
                 break
             err_pct = abs(achieved - distance_mm) / distance_mm * 100.0
             if err_pct <= tolerance_percent:
                 break
-
             correction_factor = distance_mm / achieved
             ratio *= correction_factor
-            extended = _apply_extend(
-                doc, face, ratio, direction, freecad_tolerance
-            )
+            extended = _apply_extend(doc, face, ratio, directions, freecad_tolerance)
             achieved = _measure_extension(face, extended)
             result.ratio_used = ratio
             result.achieved_mm = achieved
             result.extended_face = extended
             result.correction_applied = True
 
-        # Final status
         if result.achieved_percent_error is not None and \
                 result.achieved_percent_error > tolerance_percent:
             result.status = ExtrapolationStatus.PARTIAL
