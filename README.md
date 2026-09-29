@@ -272,3 +272,6 @@ surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/cur
 surface-assistant run examples/test1/surface_1.stp --boundary examples/test1/curve_1.stp --llm -o examples/test1/extended.FCStd
 
 surface-assistant run examples/test1/surface_1.stp --boundary examples/test1/curve_1.stp --llm -o --direction all examples/test1/extended.FCStd
+
+
+surface-assistant run-folder examples/test3 --llm -o examples/test3/extended.FCStd

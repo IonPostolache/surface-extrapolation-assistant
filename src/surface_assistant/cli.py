@@ -127,6 +127,42 @@ def run(
         saved = save_extended_faces(report, output)
         console.print(f"[green]Saved to[/green] {saved}")
 
+@app.command()
+def run_folder(
+    folder: Path = typer.Argument(..., help="Folder containing surface.stp and curve.stp"),
+    distance: float = typer.Option(None, "--distance", "-d"),
+    tolerance: float = typer.Option(None, "--tolerance", "-t"),
+    output: Path = typer.Option(None, "--output", "-o"),
+    llm: bool = typer.Option(False, "--llm"),
+) -> None:
+    """Run the pipeline on a folder. Auto-detects surface vs boundary."""
+    from surface_assistant.step_io import resolve_inputs
+    from surface_assistant.batch import run_batch
+    from surface_assistant.io import save_extended_faces
+
+    surface_path, boundary_path = resolve_inputs(folder)
+    console.print(f"[cyan]Surface :[/cyan]  {surface_path.name}")
+    console.print(f"[cyan]Boundary:[/cyan]  {boundary_path.name}")
+
+    cfg = load_config()
+    target_mm = distance if distance is not None else cfg.extrapolation.target_distance_mm
+    tol_percent = tolerance if tolerance is not None else cfg.extrapolation.tolerance_percent
+
+    console.rule("[bold]Batch extrapolation")
+    report = run_batch(
+        step_file=surface_path,
+        boundary_file=boundary_path,
+        target_mm=target_mm,
+        tolerance_percent=tol_percent,
+        max_correction_passes=cfg.extrapolation.max_correction_passes,
+        use_llm=llm,
+    )
+    console.print(report.summary())
+
+    if output is not None:
+        saved = save_extended_faces(report, output)
+        console.print(f"[green]Saved to[/green] {saved}")
+
 def main() -> None:
     try:
         app()

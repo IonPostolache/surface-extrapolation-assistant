@@ -95,3 +95,106 @@ def load_boundary(boundary_path: str | Path, doc_name: str = "Boundary"):
         )
 
     return doc, shape
+
+
+def resolve_inputs(folder: str | Path) -> tuple[Path, Path]:
+    """Given a folder, find the surface and boundary STEP files.
+
+    A file with faces is the surface; a file with only edges is the
+    boundary. Both .step and .stp extensions are recognized.
+
+    Parameters
+    ----------
+    folder : str | Path
+        Folder containing two STEP files.
+
+    Returns
+    -------
+    (surface_path, boundary_path)
+
+    Raises
+    ------
+    FileNotFoundError
+        If the folder doesn't contain exactly one surface and one boundary.
+    """
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise NotADirectoryError(f"Not a folder: {folder}")
+
+    # Collect all STEP candidates
+    candidates: list[Path] = []
+    for ext in ("*.step", "*.stp", "*.STEP", "*.STP"):
+        candidates.extend(folder.glob(ext))
+
+    if len(candidates) < 2:
+        raise FileNotFoundError(
+            f"Expected at least 2 STEP files in {folder}, found {len(candidates)}"
+        )
+
+    surfaces: list[Path] = []
+    boundaries: list[Path] = []
+    other: list[Path] = []
+
+    for path in candidates:
+        kind = _probe_step_file(path)
+        if kind == "surface":
+            surfaces.append(path)
+        elif kind == "boundary":
+            boundaries.append(path)
+        else:
+            other.append(path)
+
+    if len(surfaces) == 0:
+        raise FileNotFoundError(
+            f"No surface file found in {folder}. Candidates: {[p.name for p in candidates]}"
+        )
+    if len(boundaries) == 0:
+        raise FileNotFoundError(
+            f"No boundary file found in {folder}. Candidates: {[p.name for p in candidates]}"
+        )
+    if len(surfaces) > 1:
+        raise FileNotFoundError(
+            f"Ambiguous: multiple surface files found in {folder}: "
+            f"{[p.name for p in surfaces]}"
+        )
+    if len(boundaries) > 1:
+        raise FileNotFoundError(
+            f"Ambiguous: multiple boundary files found in {folder}: "
+            f"{[p.name for p in boundaries]}"
+        )
+
+    return surfaces[0], boundaries[0]
+
+
+def _probe_step_file(path: Path) -> str:
+    """Load a STEP file in a temp doc and classify it.
+
+    Returns 'surface', 'boundary', or 'unknown'.
+    """
+    doc = None
+    try:
+        doc = FreeCAD.newDocument("_Probe")
+        Part.insert(str(path), doc.Name)
+        doc.recompute()
+
+        shapes = [obj.Shape for obj in doc.Objects if hasattr(obj, "Shape")]
+        if not shapes:
+            return "unknown"
+
+        # Combine all shapes' faces and edges
+        total_faces = sum(len(s.Faces) for s in shapes)
+        total_edges = sum(len(s.Edges) for s in shapes)
+
+        if total_faces > 0:
+            return "surface"
+        if total_edges > 0:
+            return "boundary"
+        return "unknown"
+    except Exception:
+        return "unknown"
+    finally:
+        if doc is not None:
+            try:
+                FreeCAD.closeDocument(doc.Name)
+            except Exception:
+                pass
