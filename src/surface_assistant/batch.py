@@ -131,6 +131,7 @@ def run_batch(
     max_correction_passes: int = 1,
     doc_name: str = "_BatchSurface",
     use_llm: bool = False, 
+    output_fcstd: Path | None = None,
 ) -> BatchReport:
     """Run extrapolation over all boundary faces of a STEP surface.
 
@@ -207,13 +208,34 @@ def run_batch(
                 tolerance_mm=cfg.join.sewing_tolerance_mm,
                 refine=cfg.join.refine_shape,
             )
-            if use_llm and report.join_result is not None:
-                if report.join_result.status != JoinStatus.SUCCESS:
-                    from surface_assistant.llm import diagnose
-                    report.llm_diagnosis = diagnose(
-                        report.join_result,
-                        report.results,
-                    )
+
+            # Save the FCStd if a path was given, so the renderer can open it
+            if output_fcstd is not None:
+                try:
+                    from surface_assistant.io import save_extended_faces
+                    save_extended_faces(report, Path(output_fcstd))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[batch] FCStd save failed: {exc}")
+
+            # If the join failed and the LLM is enabled, diagnose
+            if use_llm and report.join_result.status != JoinStatus.SUCCESS:
+                from surface_assistant.llm import diagnose
+                from surface_assistant.io import render_fcstd_to_png
+
+                png_path = None
+                if output_fcstd is not None:
+                    try:
+                        png_path = Path(output_fcstd).with_suffix(".png")
+                        render_fcstd_to_png(Path(output_fcstd), png_path)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[batch] PNG render failed: {exc}")
+                        png_path = None
+
+                report.llm_diagnosis = diagnose(
+                    report.join_result,
+                    report.results,
+                    image_path=png_path,
+                )
 
         return report
 

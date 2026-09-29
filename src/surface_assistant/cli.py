@@ -120,12 +120,13 @@ def run(
         tolerance_percent=tol_percent,
         max_correction_passes=cfg.extrapolation.max_correction_passes,
         use_llm=llm,
+        output_fcstd=output,
     )
     console.print(report.summary())
 
     if output is not None:
-        saved = save_extended_faces(report, output)
-        console.print(f"[green]Saved to[/green] {saved}")
+        # saved = save_extended_faces(report, output)
+        console.print(f"[green]Saved to[/green] {output}")
 
 @app.command()
 def run_folder(
@@ -156,12 +157,13 @@ def run_folder(
         tolerance_percent=tol_percent,
         max_correction_passes=cfg.extrapolation.max_correction_passes,
         use_llm=llm,
+        output_fcstd=output
     )
     console.print(report.summary())
 
     if output is not None:
-        saved = save_extended_faces(report, output)
-        console.print(f"[green]Saved to[/green] {saved}")
+        # saved = save_extended_faces(report, output)
+        console.print(f"[green]Saved to[/green] {output}")
 
 def main() -> None:
     try:

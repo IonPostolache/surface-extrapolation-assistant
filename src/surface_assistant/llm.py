@@ -1,10 +1,12 @@
 """Local LLM client for failure diagnostics.
 
 Uses LM Studio's OpenAI-compatible API with structured JSON output.
+Supports optional image input for vision-capable models.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from dataclasses import dataclass, field
@@ -275,12 +277,6 @@ def _parse_response(raw: str) -> tuple[str, float, list[str]]:
         else:
             print(f"[llm debug] rejected action: {a!r}")
 
-    # DEBUG: see what the model returned
-    print(f"[llm debug] raw actions: {actions_raw}")
-    print(f"[llm debug] allowed: {ALLOWED_ACTIONS}")
-
-    # actions = [a for a in actions_raw if a in ALLOWED_ACTIONS]
-
     return diagnosis, confidence, actions
 
 
@@ -292,14 +288,43 @@ def diagnose(
     join_result,
     extrapolation_results: list,
     *,
+    image_path: str | Path | None = None,
     verbose: bool = False,
 ) -> LLMDiagnosis:
-    """Ask the local LLM to diagnose a join failure."""
+    """Ask the local LLM to diagnose a join failure.
+
+    Parameters
+    ----------
+    join_result : JoinResult | None
+        The join step's result.
+    extrapolation_results : list[ExtrapolationResult]
+        Per-face results from the batch run.
+    image_path : str | Path | None
+        Optional path to a rendered PNG of the result. If provided and
+        the model supports vision, the image is included in the request.
+    verbose : bool
+        If True, print the raw LLM response.
+    """
     payload = _build_diagnostic_payload(join_result, extrapolation_results)
-    user_message = (
+    text_message = (
         "Diagnose this pipeline failure and recommend recovery actions:\n\n"
         + json.dumps(payload, indent=2)
     )
+
+    # Build multimodal content
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": text_message}
+    ]
+
+    if image_path is not None:
+        try:
+            image_uri = _encode_image_base64(image_path)
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": image_uri},
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"[llm] image encoding failed, continuing text-only: {exc}")
 
     cfg = _config()
     url = cfg["base_url"].rstrip("/") + "/chat/completions"
@@ -308,10 +333,9 @@ def diagnose(
         "model": cfg["model"],
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": content},
         ],
         "temperature": cfg["temperature"],
-        # LM Studio requires json_schema (not json_object)
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -385,3 +409,27 @@ def diagnose(
         recommended_actions=actions,
         raw_response=raw,
     )
+
+def _encode_image_base64(image_path: str | Path) -> str:
+    """Read an image file and return a base64 data URI."""
+    path = Path(image_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Image not found: {path}")
+
+    # LM Studio accepts png/jpeg/gif data URIs. Encode as PNG or JPEG only.
+    ext = path.suffix.lower()
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+    }.get(ext)
+
+    if mime is None:
+        raise ValueError(
+            f"Unsupported image format {ext}. Use .png, .jpg, .jpeg, or .gif"
+        )
+
+    data = path.read_bytes()
+    b64 = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{b64}"

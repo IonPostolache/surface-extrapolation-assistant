@@ -60,6 +60,20 @@ def _candidate_paths() -> list[str]:
     return candidates
 
 
+def _add_site_packages(lib_path: str) -> None:
+    """Add FreeCAD's bundled site-packages to sys.path if present."""
+    lib_dir = Path(lib_path)
+    candidates = [
+        lib_dir / "python3.11" / "site-packages",
+        lib_dir / "python3.10" / "site-packages",
+        lib_dir / "python3.12" / "site-packages",
+    ]
+    for sp in candidates:
+        if sp.exists() and str(sp) not in sys.path:
+            sys.path.append(str(sp))
+            return
+
+        
 def setup_freecad_path() -> str:
     """Add FreeCAD's lib directory to sys.path.
 
@@ -71,6 +85,7 @@ def setup_freecad_path() -> str:
     if cfg_path and Path(cfg_path).exists():
         if cfg_path not in sys.path:
             sys.path.append(cfg_path)
+        _add_site_packages(cfg_path)  
         return cfg_path
 
     # 2. Try common locations
@@ -78,6 +93,7 @@ def setup_freecad_path() -> str:
         if Path(candidate).exists():
             if candidate not in sys.path:
                 sys.path.append(candidate)
+            _add_site_packages(candidate)
             return candidate
 
     raise RuntimeError(
