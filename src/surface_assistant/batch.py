@@ -102,7 +102,14 @@ class BatchReport:
             lines.append(f"  {self.join_result.short()}")
         if self.llm_diagnosis is not None:
             lines.append("")
-            lines.append(f"  {self.llm_diagnosis.short()}")
+            lines.append("  LLM diagnosis:")
+            lines.append(f"    {self.llm_diagnosis.diagnosis}")
+            lines.append(f"    confidence: {self.llm_diagnosis.confidence:.2f}")
+            if self.llm_diagnosis.recommended_actions:
+                actions = ", ".join(self.llm_diagnosis.recommended_actions)
+                lines.append(f"    actions: {actions}")
+            else:
+                lines.append("    actions: none")
         for r in self.results:
             dir_str = self.face_directions.get(r.face_index, "?")
             lines.append(f"  {r.short()}  [dirs: {dir_str}]")

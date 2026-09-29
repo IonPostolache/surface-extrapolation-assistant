@@ -151,26 +151,33 @@ def is_available() -> bool:
 _SYSTEM_PROMPT = """You are a CAD geometry analysis assistant.
 
 You will receive a JSON object describing a failure from a FreeCAD-based
-surface extrapolation pipeline. The pipeline extends boundary faces of
-an imported STEP surface and tries to join the extended faces into a
-single shell.
+surface extrapolation pipeline.
+
+Key signals:
+    - "shell_is_valid": false means the fused shell self-intersects.
+      This almost always indicates extensions are OVER-extending or
+      extending in the WRONG DIRECTION, not that they are too short.
+    - "ratio_suspicious": true on a face means the extension distance
+      exceeded the face's own extent, indicating a likely wrong direction.
+    - "open_edge_count" counts edges in the shell not shared by two faces.
 
 Your job:
     1. Explain, in one or two sentences, the most likely geometric cause
        of the failure.
-    2. Recommend ONE OR MORE recovery actions from the allowed list:
-         - retry_same_parameters
-         - reduce_extension_distance
-         - increase_extension_distance
-         - skip_face
-         - manual_review
+    2. Recommend ONE OR MORE recovery actions. You MUST use EXACTLY
+       these strings:
+         - "retry_same_parameters"
+         - "reduce_extension_distance"
+         - "increase_extension_distance"
+         - "skip_face"
+         - "manual_review"
     3. Assign a confidence between 0.0 and 1.0.
 
-Respond ONLY with valid JSON matching the provided schema.
+Respond ONLY with valid JSON.
 """
 
 
-def _build_diagnostic_payload(join_result, extrapolation_results: list) -> dict:
+def _build_diagnostic_payload(join_result, extrapolation_results):
     faces = []
     for r in extrapolation_results:
         faces.append({
@@ -179,18 +186,30 @@ def _build_diagnostic_payload(join_result, extrapolation_results: list) -> dict:
             "requested_mm": r.requested_mm,
             "achieved_mm": r.achieved_mm,
             "percent_error": r.achieved_percent_error,
+            "ratio_used": r.ratio_used,             # NEW
+            "ratio_suspicious": (                     # NEW
+                r.ratio_used is not None and r.ratio_used > 1.0
+            ),
             "error": r.error_message,
         })
 
-    payload: dict[str, Any] = {"join": None, "faces": faces}
+    payload = {"join": None, "faces": faces}
 
     if join_result is not None:
+        shell_valid = None
+        if join_result.sewed_shell is not None:
+            try:
+                shell_valid = join_result.sewed_shell.isValid()
+            except Exception:
+                pass
+
         payload["join"] = {
             "status": join_result.status.value,
             "method_used": join_result.method_used,
             "input_face_count": join_result.input_face_count,
             "open_edge_count": join_result.open_edge_count,
             "tolerance_used_mm": join_result.tolerance_used_mm,
+            "shell_is_valid": shell_valid,          # NEW — key signal
             "error": join_result.error_message,
         }
 
@@ -200,6 +219,27 @@ def _build_diagnostic_payload(join_result, extrapolation_results: list) -> dict:
 # ---------------------------------------------------------------------------
 # Parsing and validation
 # ---------------------------------------------------------------------------
+def _normalize_action(raw: str) -> str | None:
+    s = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    # Strip anything that isn't a-z0-9_
+    s = "".join(ch for ch in s if ch.isalnum() or ch == "_")
+    if s in ALLOWED_ACTIONS:
+        return s
+    # Fuzzy fallback for common variants
+    aliases = {
+        "reduce_extension": "reduce_extension_distance",
+        "increase_extension": "increase_extension_distance",
+        "reduce_distance": "reduce_extension_distance",
+        "increase_distance": "increase_extension_distance",
+        "skip": "skip_face",
+        "retry": "retry_same_parameters",
+        "manual": "manual_review",
+    }
+    for key, canonical in aliases.items():
+        if key in s:
+            return canonical
+    return None
+
 
 def _parse_response(raw: str) -> tuple[str, float, list[str]]:
     text = raw.strip()
@@ -222,11 +262,24 @@ def _parse_response(raw: str) -> tuple[str, float, list[str]]:
     except (TypeError, ValueError):
         confidence = 0.0
 
+    actions = []
+
     actions_raw = data.get("recommended_actions", [])
     if not isinstance(actions_raw, list):
         raise ValueError("'recommended_actions' must be a list")
 
-    actions = [a for a in actions_raw if a in ALLOWED_ACTIONS]
+    for a in actions_raw:
+        normalized = _normalize_action(a)
+        if normalized:
+            actions.append(normalized)
+        else:
+            print(f"[llm debug] rejected action: {a!r}")
+
+    # DEBUG: see what the model returned
+    print(f"[llm debug] raw actions: {actions_raw}")
+    print(f"[llm debug] allowed: {ALLOWED_ACTIONS}")
+
+    # actions = [a for a in actions_raw if a in ALLOWED_ACTIONS]
 
     return diagnosis, confidence, actions
 

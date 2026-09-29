@@ -165,6 +165,7 @@ def join_faces(
     tolerance_mm: float = 0.04,
     refine: bool = True,
     doc_name: str = "_JoinDoc",
+    max_open_edge_ratio: float = 0.20,   # at most 20% open edges
 ) -> JoinResult:
     """Join a list of extended faces into a single shell.
 
@@ -210,20 +211,36 @@ def join_faces(
             if refine:
                 fused = _refine(fused)
             shells = len(fused.Shells)
+            total_edges = len(fused.Edges)
             open_edges = _count_open_edges(fused, tolerance=tolerance_mm)
+            open_ratio = open_edges / total_edges if total_edges > 0 else 1.0
 
-            if shells == 1 and open_edges == 0:
-                result.status = JoinStatus.SUCCESS
-                result.method_used = "fuse"
-                result.sewed_shell = fused
-                result.open_edge_count = 0
-                return result
+            is_valid = True
+            try:
+                is_valid = fused.isValid()
+            except Exception:
+                pass
 
-            if shells == 1:
+            if shells == 1 and open_ratio <= max_open_edge_ratio and is_valid:
                 result.status = JoinStatus.SUCCESS
                 result.method_used = "fuse"
                 result.sewed_shell = fused
                 result.open_edge_count = open_edges
+                return result
+
+            if shells == 1:
+                # Connected, but too many open edges or invalid — PARTIAL
+                result.status = JoinStatus.PARTIAL
+                result.method_used = "fuse"
+                result.sewed_shell = fused
+                result.open_edge_count = open_edges
+                if not is_valid:
+                    result.error_message = "fused shell is invalid (self-intersecting)"
+                else:
+                    result.error_message = (
+                        f"fused shell has {open_edges}/{total_edges} open edges "
+                        f"({open_ratio*100:.0f}%), exceeds threshold"
+                    )
                 return result
 
         # Attempt 2: sew (only if fuse didn't produce a single shell)

@@ -245,6 +245,18 @@ def extrapolate_face(
 
         ratio = distance_mm / base_extent
 
+        if ratio > 2.0:
+            return ExtrapolationResult(
+                status=ExtrapolationStatus.FAILED,
+                face_index=face_index,
+                requested_mm=distance_mm,
+                error_message=(
+                    f"ratio {ratio:.2f} exceeds 2.0 — face extent in the "
+                    f"extension direction is too small relative to the requested "
+                    f"distance, likely indicating a wrong direction inference"
+                ),
+            )
+
         extended = _apply_extend(doc, face, ratio, directions, freecad_tolerance)
         achieved = _measure_extension(face, extended)
 
