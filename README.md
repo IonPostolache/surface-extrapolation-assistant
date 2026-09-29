@@ -259,3 +259,5 @@ surface-assistant run examples/test_surface.step --boundary examples/test_bounda
 surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/curve_2.stp --distance 20
 
 surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/curve_2.stp --distance 20 -o examples/test2/extended.FCStd
+
+surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/curve_2.stp -o examples/test2/extended.FCStd

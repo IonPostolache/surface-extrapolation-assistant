@@ -12,6 +12,7 @@ from rich.table import Table
 from surface_assistant import __version__
 from surface_assistant.step_io import load_step, load_boundary
 from surface_assistant.topology import get_boundary_faces
+from surface_assistant.config import load_config
 
 app = typer.Typer(
     add_completion=False,
@@ -76,37 +77,46 @@ def run(
         ..., "--boundary", "-b", help="Boundary curve STEP file"
     ),
     distance: float = typer.Option(
-        100.0, "--distance", "-d", help="Target extrapolation distance in mm"
+        None, "--distance", "-d",
+        help="Target extrapolation distance in mm (default: config.yaml)",
     ),
     tolerance: float = typer.Option(
-        2.0, "--tolerance", "-t", help="Tolerance as a percentage"
+        None, "--tolerance", "-t",
+        help="Tolerance as a percentage (default: config.yaml)",
     ),
     output: Path = typer.Option(
         None, "--output", "-o",
         help="Save extended faces to this .FCStd file",
     ),
 ) -> None:
-    """Batch-extrapolate all boundary faces of a surface.
-
-    Directions are inferred automatically: each face extends only along
-    the UV sides that touch the user-supplied boundary curve.
-    """
+    """Batch-extrapolate all boundary faces of a surface."""
     from surface_assistant.batch import run_batch
     from surface_assistant.io import save_extended_faces
 
+    cfg = load_config()
+
+    # Resolve: CLI value > config value
+    target_mm = distance if distance is not None else cfg.extrapolation.target_distance_mm
+    tol_percent = tolerance if tolerance is not None else cfg.extrapolation.tolerance_percent
+
     console.rule("[bold]Batch extrapolation")
+    console.print(f"  Target distance : {target_mm} mm (from "
+                  f"{'CLI' if distance is not None else 'config.yaml'})")
+    console.print(f"  Tolerance       : {tol_percent}% (from "
+                  f"{'CLI' if tolerance is not None else 'config.yaml'})")
+
     report = run_batch(
         step_file=step_file,
         boundary_file=boundary_file,
-        target_mm=distance,
-        tolerance_percent=tolerance,
+        target_mm=target_mm,
+        tolerance_percent=tol_percent,
+        max_correction_passes=cfg.extrapolation.max_correction_passes,
     )
     console.print(report.summary())
 
     if output is not None:
         saved = save_extended_faces(report, output)
         console.print(f"[green]Saved to[/green] {saved}")
-
 
 def main() -> None:
     try:

@@ -19,16 +19,13 @@ from pathlib import Path
 
 import yaml
 
+from surface_assistant.config import load_config
+
 
 def _load_config_path() -> str | None:
-    """Read the FreeCAD lib_path from config.yaml if present."""
-    config_file = Path(__file__).resolve().parents[2] / "config.yaml"
-    if not config_file.exists():
-        return None
     try:
-        with open(config_file, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        return cfg.get("freecad", {}).get("lib_path") or None
+        cfg = load_config()
+        return cfg.freecad.lib_path or None
     except Exception:
         return None
 

@@ -34,6 +34,7 @@ from surface_assistant.step_io import load_step, load_boundary
 from surface_assistant.topology import BoundaryFace, get_boundary_faces
 from surface_assistant.join import JoinResult, join_faces, JoinStatus
 from surface_assistant.topology import infer_uv_directions, UVDirections
+from surface_assistant.config import load_config
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +187,11 @@ def run_batch(
 
         # Join the extended faces into a shell
         if report.extended_faces:
+            cfg = load_config()
             report.join_result = join_faces(
                 report.extended_faces,
-                tolerance_mm=0.04,  # your join tolerance
+                tolerance_mm=cfg.join.sewing_tolerance_mm,
+                refine=cfg.join.refine_shape,
             )
 
         return report

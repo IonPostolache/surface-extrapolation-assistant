@@ -11,8 +11,8 @@ freecad:
 
 
 extrapolation:
-  target_distance_mm: 100.0
-  tolerance_percent: 2.0        # acceptable deviation on target distance
+  target_distance_mm: 20.0
+  tolerance_percent: 10.0        # acceptable deviation on target distance
   max_correction_passes: 1      # calibration correction attempts
   initial_ratio: 1.0            # starting UV extension ratio
 
