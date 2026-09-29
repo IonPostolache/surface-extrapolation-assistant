@@ -25,77 +25,53 @@ OUT_DIR = Path(__file__).resolve().parent
 
 
 def build_bent_plate():
-    """Build a flat base with a curved flange in one piece.
+    """Build a bent-plate solid and return its outer shell (two faces)."""
+    import math
 
-    The base is a rectangle in the XY plane. The flange starts at the
-    Y = 0 edge, bends upward around a radius-30 axis along X.
-    """
-    base_length = 100.0      # along X
-    base_depth = 60.0        # along Y
+    base_length = 100.0
+    base_depth = 60.0
+    thickness = 1.0
     bend_radius = 30.0
     bend_angle_deg = 60.0
-
-    # 1. Base rectangle at Z = 0
-    base = Part.makePlane(
-        base_length,
-        base_depth,
-        Vector(0, 0, 0),
-        Vector(0, 0, 1),
-    )
-
-    # 2. Curved flange: a cylinder sector tangent to the base at Y = base_depth
-    import math
     angle_rad = math.radians(bend_angle_deg)
-    arc_length = bend_radius * angle_rad
 
-    # Sweep along the X axis: take a 2D profile in the YZ plane and extrude
-    # it along X. The profile is an arc of radius `bend_radius`, starting
-    # tangent to the base at (Y=base_depth, Z=0).
-    #
-    # Parameter t in [0, angle_rad]:
-    #   y(t) = base_depth + bend_radius * sin(t)
-    #   z(t) = bend_radius - bend_radius * cos(t)
+    # Build the profile in the YZ plane: an L-shape that bends at Y=base_depth.
+    # Points going around the outer profile:
+    #   (Y=0, Z=0) → (Y=base_depth, Z=0) → arc up to angle_rad
+    #   → return path offset by thickness → close.
+    # This is complex to do by hand.
 
-    def arc_point(t: float) -> Vector:
-        return Vector(
-            0.0,
-            base_depth + bend_radius * math.sin(t),
-            bend_radius - bend_radius * math.cos(t),
-        )
+    # Instead: use a swept profile. Build the flat plate, bend it via
+    # Part::Thickness or a sweep. The simplest robust option:
+    # build a wire from the base corners + arc, make a face, thicken it.
 
-    # Build the arc as a portion of a circle
-    # Center is at (0, base_depth, bend_radius) because the arc is tangent
-    # to the base at Y=base_depth, Z=0.
-    arc_center = Vector(0.0, base_depth, bend_radius)
-    arc_axis = Vector(1, 0, 0)   # normal along X, so the arc sweeps in the YZ plane
-
-    circle = Part.Circle(arc_center, arc_axis, bend_radius)
-
-    # Angles measured from the local X-axis of the circle's plane.
-    # Since the axis is X, the local plane is YZ. We want the arc to start
-    # at the point (Y=base_depth, Z=0) and sweep upward.
-    # Starting angle = -pi/2 (pointing toward -Z from center, i.e., toward base)
-    # Ending angle   = -pi/2 + angle_rad
+    pts = []
+    # Base bottom edge along Y
+    pts.append(Vector(0, 0, 0))
+    pts.append(Vector(0, base_depth, 0))
+    # Arc from (base_depth, 0) upward to angle_rad
+    arc_center = Vector(0, base_depth, bend_radius)
+    circle = Part.Circle(arc_center, Vector(1, 0, 0), bend_radius)
     arc = Part.ArcOfCircle(circle, -math.pi / 2, -math.pi / 2 + angle_rad)
-    arc_edge = arc.toShape()
+    arc_pts = [arc.value(t) for t in [i/20 for i in range(21)]]
+    pts.extend(arc_pts[1:])  # skip first, it duplicates (base_depth, 0)
 
+    # Build the wire from these points
+    edges = []
+    for i in range(len(pts) - 1):
+        edges.append(Part.LineSegment(pts[i], pts[i+1]).toShape())
 
-    # Extrude the arc along X to make the flange face
-    flange = arc_edge.extrude(Vector(base_length, 0, 0))
-    flange_face = flange.Faces[0]
+    wire = Part.Wire(edges)
+    face = Part.Face(wire)
 
-    # 3. Combine into a shell (two faces joined at the common edge)
-    # shell = Part.makeShell([base.Face, flange_face])
-    shell = Part.makeShell([base, flange_face])
+    # Extrude along X to make a solid
+    solid = face.extrude(Vector(base_length, 0, 0))
 
-    # Try to sew the shell into a unified shape
-    try:
-        sewn = shell.sewShape()
-        sewn = sewn.removeSplitter()
-        if len(sewn.Faces) >= 1:
-            shell = sewn
-    except Exception:
-        pass  # Fall back to the un-sewn shell
+    # Now extract the two faces we care about: the flat bottom and the curved top
+    # (in our parametrization, these are the two "long" faces of the solid).
+    # Sorting by area to pick the two largest.
+    faces_by_area = sorted(solid.Faces, key=lambda f: f.Area, reverse=True)
+    shell = Part.makeShell(faces_by_area[:2])
 
     return shell
 

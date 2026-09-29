@@ -10,6 +10,19 @@ import FreeCAD  # type: ignore
 import Part     # type: ignore
 
 
+def _resolve_step_path(path: str | Path) -> Path:
+    """Accept .step, .stp, and other STEP-family extensions."""
+    p = Path(path)
+    if p.exists():
+        return p
+    # Try the alternate extension
+    for ext in (".step", ".stp", ".STEP", ".STP"):
+        alt = p.with_suffix(ext)
+        if alt.exists():
+            return alt
+    raise FileNotFoundError(f"STEP file not found: {path}")
+
+
 def _collect_shapes(doc) -> list:
     """Return all Part.Shape objects found in the document."""
     shapes = []
@@ -28,7 +41,9 @@ def load_step(step_path: str | Path, doc_name: str = "ImportedSurface"):
 
     Raises RuntimeError if the imported shape has no faces.
     """
-    step_path = Path(step_path)
+    # step_path = Path(step_path)
+    step_path = _resolve_step_path(step_path)   # <-- CHANGE
+
     if not step_path.exists():
         raise FileNotFoundError(f"STEP file not found: {step_path}")
 
@@ -56,7 +71,9 @@ def load_boundary(boundary_path: str | Path, doc_name: str = "Boundary"):
     Boundary shapes contain edges/wires rather than faces, so the
     validation here accepts edges instead of faces.
     """
-    boundary_path = Path(boundary_path)
+    # boundary_path = Path(boundary_path)
+    boundary_path = _resolve_step_path(boundary_path)   # <-- CHANGE
+
     if not boundary_path.exists():
         raise FileNotFoundError(f"Boundary file not found: {boundary_path}")
 

@@ -56,15 +56,17 @@ prof/
 
 
 # FreeCAD temp files
+*.FCStd
 *.FCStd1
 *.FCStd2
 *.FCStd3
 *.bak
+*.FCBak
 
 # Model / large test files (optional — uncomment if needed)
 *.step
 *.stp
-examples/*.FCStd
+# examples/*.FCStd
 
 
 

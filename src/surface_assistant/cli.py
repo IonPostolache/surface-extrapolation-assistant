@@ -84,9 +84,15 @@ def run(
     direction: str = typer.Option(
         "all", "--direction", help="U+, U-, V+, V-, or all"
     ),
+    output: Path = typer.Option(
+        None, "--output", "-o",
+        help="Save extended faces + join result to this .FCStd file",
+    ),
 ) -> None:
     """Batch-extrapolate all boundary faces of a surface."""
     from surface_assistant.batch import run_batch
+    from surface_assistant.io import save_extended_faces  # new module
+
 
     console.rule("[bold]Batch extrapolation")
     report = run_batch(
@@ -97,6 +103,10 @@ def run(
         direction=direction,
     )
     console.print(report.summary())
+
+    if output is not None:
+        saved = save_extended_faces(report, output)
+        console.print(f"[green]Saved to[/green] {saved}")
 
 
 def main() -> None:
