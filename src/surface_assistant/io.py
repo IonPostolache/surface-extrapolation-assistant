@@ -2,27 +2,17 @@
 
 from __future__ import annotations
 
-# CRITICAL: This must be set before PySide6 is imported anywhere.
-# It tells Qt to render offscreen instead of trying to open a window.
 import os
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
+# isort: off
 from surface_assistant import freecad_setup  # noqa: F401
-
 import FreeCAD  # type: ignore
-import Part     # type: ignore
-
-from surface_assistant import freecad_setup  # noqa: F401
-import FreeCADGui  # type: ignore
-
-from pivy import coin
-
-# Ensure Qt is initialized
-from PySide6 import QtGui  # or PySide6 depending on your FreeCAD build
-import sys
-import time
+import Part  # type: ignore
+# isort: on
 
 
 def save_extended_faces(report, output_path: Path) -> Path:
@@ -51,49 +41,88 @@ def save_extended_faces(report, output_path: Path) -> Path:
     return output_path
 
 
-def render_fcstd_to_png(fcstd_path: Path, output_png: Path) -> Path:
-    """Render a FreeCAD document to a PNG image using Qt offscreen mode.
-
-    Uses FreeCAD's real GUI rendering pipeline in offscreen mode. This
-    requires a QApplication and FreeCADGui.showMainWindow(), which is
-    only valid when setupWithoutGUI() has NOT been called.
-    """
-    fcstd_path = Path(fcstd_path)
+def render_fcstd_to_png(fcstd_path, output_png, views=("iso",)):
+    """Render one or more FreeCAD views in an isolated GUI process."""
     output_png = Path(output_png)
-
-    if not fcstd_path.exists():
-        raise FileNotFoundError(f"FCStd file not found: {fcstd_path}")
-
-    # Import GUI modules lazily so the environment variable is set first.
-    import sys
-    import FreeCADGui  # type: ignore
-    from PySide6 import QtWidgets  # type: ignore
-
-    # Ensure a QApplication exists (offscreen via QT_QPA_PLATFORM).
-    app = QtWidgets.QApplication.instance()
-    if app is None:
-        app = QtWidgets.QApplication(sys.argv)
-
-    # Bring up FreeCAD's GUI in offscreen mode.
-    FreeCADGui.showMainWindow()
-
-    # Open the document through the GUI (creates ViewObjects).
-    gui_doc = FreeCADGui.open(str(fcstd_path))
-    gui_doc.recompute()
-
-    # Give Qt a moment to process events and build the scene.
-    QtWidgets.QApplication.processEvents()
-
-    # Fit the view so the geometry fills the frame.
-    try:
-        FreeCADGui.SendMsgToActiveView("ViewFit")
-    except Exception:
-        pass
-    QtWidgets.QApplication.processEvents()
-
-    # Render to PNG.
-    view = FreeCADGui.ActiveDocument.ActiveView
-    view.saveImage(str(output_png), 1200, 900, "White")
-
-    FreeCADGui.closeDocument(gui_doc.Name)
+    if not render_fcstd_to_png_subprocess(Path(fcstd_path), output_png, views=views):
+        raise RuntimeError(f"Failed to render screenshot for {fcstd_path}")
     return output_png
+
+
+def render_fcstd_to_png_subprocess(
+    fcstd_path: Path,
+    output_png: Path,
+    size: int = 1024,
+    views: tuple[str, ...] = ("iso",),
+) -> bool:
+    """Render selected views of an FCStd file in a separate FreeCAD GUI process."""
+    fcstd_path = Path(fcstd_path).resolve()
+    output_png = Path(output_png).resolve()
+
+    snapshot_script = Path(__file__).resolve().parents[2] / "make_snapshot.py"
+    if not snapshot_script.is_file():
+        print(f"[render] Snapshot script not found at {snapshot_script}")
+        return False
+
+    command = [
+        sys.executable,
+        str(snapshot_script),
+        str(fcstd_path),
+        str(output_png),
+        "--size",
+        str(size),
+        "--views",
+        ",".join(views),
+    ]
+    if not os.environ.get("DISPLAY"):
+        xvfb_run = shutil.which("xvfb-run")
+        if not xvfb_run:
+            print("[render] xvfb-run is required when no X display is available")
+            return False
+        command = [
+            xvfb_run,
+            "-a",
+            "-s",
+            "-screen 0 1280x1024x24 +extension GLX",
+            *command,
+        ]
+
+    env = os.environ.copy()
+    env["QT_QPA_PLATFORM"] = "xcb"
+    xkb_config = Path("/usr/share/X11/xkb")
+    if xkb_config.is_dir():
+        env["XKB_CONFIG_ROOT"] = str(xkb_config)
+
+    expected_outputs = (
+        [output_png]
+        if len(views) == 1
+        else [
+            output_png.with_name(f"{output_png.stem}_{view}{output_png.suffix}")
+            for view in views
+        ]
+    )
+
+    try:
+        result = subprocess.run(
+            command,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if result.returncode == 0 and all(
+            path.is_file() and path.stat().st_size > 0 for path in expected_outputs
+        ):
+            return True
+        print(f"[render] Subprocess failed (code {result.returncode})")
+        if result.stderr:
+            print(f"[render] stderr: {result.stderr[-1000:]}")
+        return False
+
+    except subprocess.TimeoutExpired:
+        print("[render] Render timed out")
+        return False
+    except Exception as e:
+        print(f"[render] Unexpected error: {e}")
+        return False

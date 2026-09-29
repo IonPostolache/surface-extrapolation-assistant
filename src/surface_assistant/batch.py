@@ -226,8 +226,11 @@ def run_batch(
                 if output_fcstd is not None:
                     try:
                         png_path = Path(output_fcstd).with_suffix(".png")
-                        render_fcstd_to_png(Path(output_fcstd), png_path)
-                    except Exception as exc:  # noqa: BLE001
+                        from surface_assistant.io import render_fcstd_to_png_subprocess
+                        success = render_fcstd_to_png_subprocess(Path(output_fcstd), png_path)
+                        if not success:
+                            png_path = None
+                    except Exception as exc:
                         print(f"[batch] PNG render failed: {exc}")
                         png_path = None
 

@@ -130,6 +130,32 @@ pip install -r requirements.txt
 python -m surface_assistant.cli model.step --boundary boundary.step --extension 100
 ```
 
+### Save a screenshot of a FreeCAD document
+
+On Linux, use Xvfb for the FreeCAD GUI viewport when no desktop display is
+available:
+
+```bash
+QT_QPA_PLATFORM=xcb XKB_CONFIG_ROOT=/usr/share/X11/xkb \
+xvfb-run -a .venv/bin/python make_snapshot.py \
+  examples/test3/extended.FCStd examples/test3/extended.png --size 1024
+```
+
+`run-folder` can also render screenshots as part of a batch run. Point it at a
+different folder containing exactly one surface STEP file and one boundary
+STEP file; their filenames do not need to follow a fixed naming pattern:
+
+```bash
+surface-assistant run-folder examples/test3 \
+  --llm -o examples/test3/extended.FCStd \
+  --screenshots --views iso,front,top,left
+```
+
+The PNGs are written beside the FCStd output as `extended_iso.png`,
+`extended_front.png`, `extended_top.png`, and `extended_left.png`. Use
+`--views front` for a single screenshot named `extended.png`. Screenshot
+generation is opt-in and requires `--output`.
+
 ## Evaluation approach
 
 Three configurations compared on 4–5 representative surfaces: direct extrapolation only, deterministic fallback retries (fixed ratio steps, no LLM), and LLM-assisted recovery. Metrics: initial success rate, recovered rate, unresolved count, retries, LLM calls, wall-clock time, and achieved-vs-requested distance.
@@ -191,21 +217,6 @@ source .venv/bin/activate
 python --version
 ```
 
-### 3. Configure the FreeCAD library path
-
-Edit `config.yaml` and set the path to FreeCAD's library directory:
-
-```yaml
-freecad:
-  lib_path: "/home/<you>/.FreeCAD/squashfs-root/usr/lib"
-```
-
-Alternatively, set the `FREECAD_LIB_PATH` environment variable:
-
-```bash
-export FREECAD_LIB_PATH="/home/<you>/.FreeCAD/squashfs-root/usr/lib"
-```
-
 ### 4. Install the project
 
 ```bash
@@ -214,35 +225,7 @@ pip install -e ".[dev]"
 
 ### 5. Verify the setup
 
-```bash
-python -c "
-from surface_assistant import freecad_setup
-import FreeCAD
-import Part
-box = Part.makeBox(10, 10, 10)
-print('FreeCAD version:', FreeCAD.Version()[0], FreeCAD.Version()[1])
-print('Faces:', len(box.Faces))
-from surface_assistant.topology import fingerprint_face
-print('Fingerprint:', fingerprint_face(box.Faces[0]).short())
-"
-```
 
-Expected output:
-
-```
-FreeCAD version: 1 1
-Faces: 6
-Fingerprint: Plane|A=100.000|COM=(0.00,5.00,5.00)
-```
-
-### Optional: Local LLM (Ollama)
-
-The geometry pipeline runs entirely without an LLM. To enable failure
-diagnosis, install [Ollama](https://ollama.com) and pull a model:
-
-```bash
-ollama pull qwen2.5-coder:7b
-```
 
 ### Usage
 
@@ -262,10 +245,7 @@ surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/cur
 
 surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/curve_2.stp -o examples/test2/extended.FCStd
 
-
 surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/curve_2.stp --distance 20 --tolerance 0.01 --llm -o examples/test2/extended.FCStd
-
-surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/curve_2.stp --distance 2000 --tolerance 0.001 --llm -o examples/test2/extended.FCStd
 
 surface-assistant run examples/test2/surface_2.stp --boundary examples/test2/curve_2.stp --llm -o examples/test2/extended.FCStd
 
@@ -274,4 +254,6 @@ surface-assistant run examples/test1/surface_1.stp --boundary examples/test1/cur
 surface-assistant run examples/test1/surface_1.stp --boundary examples/test1/curve_1.stp --llm -o --direction all examples/test1/extended.FCStd
 
 
-surface-assistant run-folder examples/test3 --llm -o examples/test3/extended.FCStd
+surface-assistant run-folder examples/test3 --llm -o examples/test3/extended.FCStd --screenshots
+
+surface-assistant run-folder examples/test3 --llm -o examples/test3/extended.FCStd --screenshots --views iso,front,top,left

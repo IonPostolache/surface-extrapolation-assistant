@@ -13,14 +13,17 @@ if not QApplication.instance():
 
 def generate_screenshot(face: FC.DocumentObject, output_path: str) -> bool:
     """
-    Generate a screenshot of the given face in FreeCAD.
-    Returns True if successful, False otherwise.
-    """
-    try:
+21 |         doc = FC.App.newDocument()
+22 |         FCGui.setActiveDocument(doc)
         # Create temporary document
-        doc = FC.newDocument()
-        fc_face = FCGui.ActiveDocument.addObject("Part::Feature", "Face")
+24 |         # Create a new object to hold the face shape
+25 |         obj = doc.addObject("Part::Feature", "FaceObject")
+26 |         obj.Shape = face.Shape
+        doc = FC.App.newDocument()
+        doc = FC.App.newDocument()
+        FCGui.setActiveDocument(doc)
         fc_face.Shape = face.Shape
+26 |         doc.recompute()
 
         # Set up view
         view = FCGui.ActiveDocument.ActiveView
@@ -33,8 +36,8 @@ def generate_screenshot(face: FC.DocumentObject, output_path: str) -> bool:
         view.fitAll()
 
         # Render to image
-        img_path = os.path.join(tempfile.gettempdir(), "face_screenshot.png")
-        FCGui.ActiveDocument.ActiveView.saveImage(img_path, 1024, 768, "PNG")
+img_path = output_path
+FCGui.ActiveDocument.ActiveView.saveImage(img_path, 1024, 768, "PNG")
         
         # Copy to output path
         if not os.path.exists(os.path.dirname(output_path)):

@@ -62,12 +62,14 @@ prof/
 *.FCStd3
 *.bak
 *.FCBak
+*.fcstd
 
 # Model / large test files (optional — uncomment if needed)
 *.step
 *.stp
 # examples/*.FCStd
-
+*.png
+*.txt
 
 
 # Tool caches

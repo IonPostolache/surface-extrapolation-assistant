@@ -135,6 +135,14 @@ def run_folder(
     tolerance: float = typer.Option(None, "--tolerance", "-t"),
     output: Path = typer.Option(None, "--output", "-o"),
     llm: bool = typer.Option(False, "--llm"),
+    screenshots: bool = typer.Option(
+        False, "--screenshots", help="Save PNG screenshots of the output document"
+    ),
+    views: str = typer.Option(
+        "iso",
+        "--views",
+        help="Comma-separated screenshot views: iso,front,top,left",
+    ),
 ) -> None:
     """Run the pipeline on a folder. Auto-detects surface vs boundary."""
     from surface_assistant.step_io import resolve_inputs
@@ -162,8 +170,24 @@ def run_folder(
     console.print(report.summary())
 
     if output is not None:
-        # saved = save_extended_faces(report, output)
         console.print(f"[green]Saved to[/green] {output}")
+
+    if screenshots:
+        if output is None:
+            raise typer.BadParameter("--screenshots requires an output FCStd path via --output")
+        requested_views = tuple(view.strip().lower() for view in views.split(",") if view.strip())
+        from surface_assistant.io import render_fcstd_to_png_subprocess
+
+        png_path = output.with_suffix(".png")
+        if not render_fcstd_to_png_subprocess(output, png_path, views=requested_views):
+            raise RuntimeError(f"Failed to create screenshots from {output}")
+        if len(requested_views) == 1:
+            console.print(f"[green]Screenshot saved to[/green] {png_path}")
+        else:
+            console.print(
+                f"[green]Screenshots saved with base name[/green] "
+                f"{png_path.with_suffix('')}_<view>.png"
+            )
 
 def main() -> None:
     try:
