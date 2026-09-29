@@ -11,13 +11,13 @@ freecad:
 
 
 extrapolation:
-  target_distance_mm: 20.0
-  tolerance_percent: 10.0        # acceptable deviation on target distance
+  target_distance_mm: 100.0     # default 100
+  tolerance_percent: 10.0       # acceptable deviation on target distance
   max_correction_passes: 1      # calibration correction attempts
   initial_ratio: 1.0            # starting UV extension ratio
 
 join:
-  sewing_tolerance_mm: 0.04     # your join tolerance
+  sewing_tolerance_mm: 0.04     # your join tolerance, default 0.04
   refine_shape: true
 
 llm:

@@ -35,6 +35,7 @@ from surface_assistant.topology import BoundaryFace, get_boundary_faces
 from surface_assistant.join import JoinResult, join_faces, JoinStatus
 from surface_assistant.topology import infer_uv_directions, UVDirections
 from surface_assistant.config import load_config
+from surface_assistant.llm import LLMDiagnosis
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,8 @@ class BatchReport:
     join_result: JoinResult | None = None
 
     face_directions: dict[int, str] = field(default_factory=dict)
+
+    llm_diagnosis: "LLMDiagnosis | None" = None
 
     @property
     def successes(self) -> list[ExtrapolationResult]:
@@ -97,6 +100,9 @@ class BatchReport:
         if self.join_result is not None:
             lines.append("")
             lines.append(f"  {self.join_result.short()}")
+        if self.llm_diagnosis is not None:
+            lines.append("")
+            lines.append(f"  {self.llm_diagnosis.short()}")
         for r in self.results:
             dir_str = self.face_directions.get(r.face_index, "?")
             lines.append(f"  {r.short()}  [dirs: {dir_str}]")
@@ -117,6 +123,7 @@ def run_batch(
     direction: str = "all",
     max_correction_passes: int = 1,
     doc_name: str = "_BatchSurface",
+    use_llm: bool = False, 
 ) -> BatchReport:
     """Run extrapolation over all boundary faces of a STEP surface.
 
@@ -193,6 +200,13 @@ def run_batch(
                 tolerance_mm=cfg.join.sewing_tolerance_mm,
                 refine=cfg.join.refine_shape,
             )
+            if use_llm and report.join_result is not None:
+                if report.join_result.status != JoinStatus.SUCCESS:
+                    from surface_assistant.llm import diagnose
+                    report.llm_diagnosis = diagnose(
+                        report.join_result,
+                        report.results,
+                    )
 
         return report
 

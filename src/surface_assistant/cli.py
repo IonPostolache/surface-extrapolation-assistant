@@ -88,6 +88,14 @@ def run(
         None, "--output", "-o",
         help="Save extended faces to this .FCStd file",
     ),
+    llm: bool = typer.Option(
+        False, "--llm",
+        help="Use local LLM for failure diagnostics",
+    ),
+    llm_verbose: bool = typer.Option(
+        False, "--llm-verbose",
+        help="Print the raw LLM response",
+    ),
 ) -> None:
     """Batch-extrapolate all boundary faces of a surface."""
     from surface_assistant.batch import run_batch
@@ -111,6 +119,7 @@ def run(
         target_mm=target_mm,
         tolerance_percent=tol_percent,
         max_correction_passes=cfg.extrapolation.max_correction_passes,
+        use_llm=llm,
     )
     console.print(report.summary())
 
