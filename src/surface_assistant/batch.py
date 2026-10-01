@@ -228,32 +228,50 @@ def run_batch(
 
         # Join the extended faces into a shell
         if report.extended_faces:
-            # Trim ONLY the extended boundary faces (small set)
-            trim_result = trim_overlapping_faces(report.extended_faces, verbose=True)
-            report.extended_faces = trim_result.trimmed_faces
-            report.trim_result = trim_result
-            print(f"[batch] {trim_result.short()}")
+            cfg = load_config()
 
-            # NOW add the non-boundary faces after trimming
+            # 1. Compute the non-boundary (interior) faces FIRST
             boundary_indices = {bf.index for bf in boundary_faces}
             non_boundary_faces = [
                 Part.Face(f) for i, f in enumerate(shape.Faces)
                 if i not in boundary_indices
             ]
             if non_boundary_faces:
-                print(f"[batch] adding {len(non_boundary_faces)} non-boundary faces to join")
-                # report.extended_faces.extend(non_boundary_faces)
+                print(f"[batch] {len(non_boundary_faces)} interior faces identified")
 
-            cfg = load_config()
-            # Fuse the extended faces (small set) into a shell
+            # 2. Trim overlaps between extended faces (small set)
+            trim_result = trim_overlapping_faces(report.extended_faces, verbose=True)
+            print(f"[batch] {trim_result.short()}")
+
+            # 3. Trim extended faces where they overlap interior faces
+            from surface_assistant.trim import trim_against_interior
+            if non_boundary_faces and (
+                len(trim_result.trimmed_faces) * len(non_boundary_faces) < 500
+            ):
+                trimmed_extended = trim_against_interior(
+                    trim_result.trimmed_faces,
+                    non_boundary_faces,
+                    tolerance_mm=cfg.join.sewing_tolerance_mm,
+                    verbose=True,
+                )
+                trim_result.trimmed_faces = trimmed_extended
+            else:
+                print(
+                    f"[batch] skipping interior trim "
+                    f"({len(trim_result.trimmed_faces)} × {len(non_boundary_faces)} pairs)"
+                )
+
+            report.extended_faces = trim_result.trimmed_faces
+            report.trim_result = trim_result
+
+            # 4. Fuse the extended faces (small set) into a shell
             extended_join = join_faces(
                 trim_result.trimmed_faces,
                 tolerance_mm=cfg.join.sewing_tolerance_mm,
                 refine=cfg.join.refine_shape,
             )
 
-            # Combine extended + interior faces into a single compound.
-            # (No fuse — a compound preserves connectivity without a slow boolean.)
+            # 5. Combine extended + interior into one compound
             if non_boundary_faces and extended_join.sewed_shell is not None:
                 valid_interior = [f for f in non_boundary_faces if _is_valid_face(f)]
                 filtered = len(non_boundary_faces) - len(valid_interior)
@@ -261,13 +279,9 @@ def run_batch(
                     print(f"[batch] filtered {filtered} degenerate faces")
 
                 try:
-                    interior_shape = Part.makeShell(valid_interior)
-                except Exception as exc:
-                    print(f"[batch] makeShell failed ({exc}); falling back to compound")
-                    interior_shape = Part.makeCompound(valid_interior)
-
-                try:
-                    combined = Part.makeCompound([extended_join.sewed_shell] + valid_interior)
+                    combined = Part.makeCompound(
+                        [extended_join.sewed_shell] + valid_interior
+                    )
                     extended_join.sewed_shell = combined
                     extended_join.open_edge_count = 0
                     extended_join.input_face_count = (
@@ -280,7 +294,7 @@ def run_batch(
 
             report.join_result = extended_join
 
-            # Save the FCStd if a path was given, so the renderer can open it
+            # Save the FCStd if a path was given
             if output_fcstd is not None:
                 try:
                     from surface_assistant.io import save_extended_faces
@@ -288,7 +302,7 @@ def run_batch(
                 except Exception as exc:  # noqa: BLE001
                     print(f"[batch] FCStd save failed: {exc}")
 
-            # If the join failed and the LLM is enabled, diagnose
+            # LLM diagnosis on failure
             if use_llm and report.join_result.status != JoinStatus.SUCCESS:
                 from surface_assistant.llm import diagnose
 
@@ -297,7 +311,9 @@ def run_batch(
                     try:
                         png_path = Path(output_fcstd).with_suffix(".png")
                         from surface_assistant.io import render_fcstd_to_png_subprocess
-                        success = render_fcstd_to_png_subprocess(Path(output_fcstd), png_path)
+                        success = render_fcstd_to_png_subprocess(
+                            Path(output_fcstd), png_path
+                        )
                         if not success:
                             png_path = None
                     except Exception as exc:

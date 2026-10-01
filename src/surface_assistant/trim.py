@@ -281,3 +281,53 @@ def trim_overlapping_faces(
     result.trimmed_faces = current_faces
     result.trimmed_face_count = len(current_faces)
     return result
+
+
+def trim_against_interior(
+    extended_faces: list[Part.Face],
+    interior_faces: list[Part.Face],
+    *,
+    tolerance_mm: float = 0.04,
+    verbose: bool = False,
+) -> list[Part.Face]:
+    """Trim each extended face where it overlaps an interior face.
+
+    Extended faces are sliced; interior faces are never modified.
+    """
+    trimmed = []
+    for i, ext_face in enumerate(extended_faces):
+        current = ext_face
+        for j, interior in enumerate(interior_faces):
+            if not _bbox_substantially_overlaps(current, interior, min_overlap_mm=1.0):
+                continue
+            if verbose:
+                print(f"[trim-interior] ext[{i}] overlaps interior[{j}]")
+
+            tool = _build_cutting_tool(current, interior, extension=50.0)
+            if tool is None:
+                continue
+
+            pieces = _slice_face(current, tool)
+            if len(pieces) < 2:
+                continue
+
+            # Keep the piece that does NOT overlap the interior
+            current = _keep_piece_away_from_neighbor(pieces, interior)
+
+        trimmed.append(current)
+
+    return trimmed
+
+def _bbox_substantially_overlaps(a, b, min_overlap_mm=2.0) -> bool:
+    try:
+        bb_a = a.BoundBox
+        bb_b = b.BoundBox
+        ox = min(bb_a.XMax, bb_b.XMax) - max(bb_a.XMin, bb_b.XMin)
+        oy = min(bb_a.YMax, bb_b.YMax) - max(bb_a.YMin, bb_b.YMin)
+        oz = min(bb_a.ZMax, bb_b.ZMax) - max(bb_a.ZMin, bb_b.ZMin)
+        # Require meaningful overlap on all axes
+        if ox < min_overlap_mm or oy < min_overlap_mm or oz < min_overlap_mm:
+            return False
+        return True
+    except Exception:
+        return False
