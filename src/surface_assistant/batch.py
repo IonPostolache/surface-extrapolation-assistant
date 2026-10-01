@@ -181,7 +181,7 @@ def run_batch(
 
         for bf in boundary_faces:
             # Infer which UV sides of this face touch the free boundary
-            dirs = infer_uv_directions(bf.face, all_faces, tolerance=1e-3)
+            dirs = infer_uv_directions(bf.face, all_faces, boundary, tolerance=1e-3, boundary_tolerance=0.5)
             report.face_directions[bf.index] = dirs.describe()
 
             result = extrapolate_face(

@@ -166,64 +166,6 @@ def describe_faces(faces: Iterable[BoundaryFace]) -> str:
         )
     return "\n".join(lines)
 
-def classify_face_edges(
-    face: Part.Face,
-    all_faces: list[Part.Face],
-    tolerance: float = 1e-3,
-) -> dict[int, str]:
-    """For each edge of `face`, return 'free' or 'shared'.
-
-    An edge is 'shared' if any *other* face in all_faces has a matching
-    edge (same length and same midpoint within tolerance).
-    """
-    result: dict[int, str] = {}
-    for i, edge in enumerate(face.Edges):
-        e_len = edge.Length
-        e_mid = edge.CenterOfMass
-        shared = False
-        for other in all_faces:
-            if other.isSame(face):
-                continue
-            for oe in other.Edges:
-                if (
-                    abs(oe.Length - e_len) < tolerance
-                    and (oe.CenterOfMass - e_mid).Length < tolerance
-                ):
-                    shared = True
-                    break
-            if shared:
-                break
-        result[i] = "shared" if shared else "free"
-    return result
-
-def infer_extension_direction(
-    face: Part.Face,
-    all_faces: list[Part.Face],
-    tolerance: float = 1e-3,
-) -> str:
-    """Return a Surface::Extend direction string based on free edges.
-
-    Heuristic:
-        - If the face's U+ edge is free and U- is shared → "U+"
-        - If U- is free and U+ is shared → "U-"
-        - If both U edges are free → "U+U-" (extend both)
-        - If both U edges are shared → fall through to V
-        - Same logic for V
-
-    For a face with 3 free edges and 1 shared edge, this picks the
-    correct two-direction extension.
-    """
-    # This is where the geometry gets fiddly. A simpler first pass:
-    # if exactly one edge is shared, extend away from it.
-    classifications = classify_face_edges(face, all_faces, tolerance)
-    shared_count = sum(1 for v in classifications.values() if v == "shared")
-    if shared_count == 0:
-        return "all"
-    if shared_count == len(classifications):
-        return "none"
-    # For now: extend in "all" but the join step will need to handle
-    # the shared-edge collision by splitting.
-    return "all"
 
 # ---------------------------------------------------------------------------
 # Infer face side
@@ -260,75 +202,52 @@ class UVDirections:
         return ",".join(parts) if parts else "none"
 
 
-def _point_on_boundary(
-    point: FreeCAD.Vector,
+def _edge_touches_boundary(
+    edge: Part.Edge,
     boundary_edges: list,
     tolerance: float,
 ) -> bool:
-    """Check if a 3D point lies on any boundary edge within tolerance."""
-    for edge in boundary_edges:
+    """Check if an edge lies on any boundary edge (same geometry, within tolerance).
+
+    Matches by length and midpoint proximity. This is a looser check than
+    endpoint matching because CATIA STEP exports sometimes produce edges
+    with the same geometry but slightly different endpoint coordinates.
+    """
+    e_mid = edge.CenterOfMass
+    e_len = edge.Length
+    for b_edge in boundary_edges:
         try:
-            # distToShape returns (distance, points, subshapes, params)
-            dist = edge.distToShape(Part.Vertex(point))[0]
-            if dist < tolerance:
-                return True
+            if abs(b_edge.Length - e_len) < tolerance:
+                if (b_edge.CenterOfMass - e_mid).Length < tolerance:
+                    return True
         except Exception:
             continue
     return False
 
 
-def _side_touches_boundary(
-    surface,
-    fixed_param: float,
-    is_u_iso: bool,
-    param_min: float,
-    param_max: float,
-    boundary_edges: list,
-    tolerance: float,
-    samples: int = 5,
-) -> bool:
-    """Sample an isoparametric curve and check if any sample is on the boundary.
-
-    is_u_iso=True means this is a uIso curve (fixed u, varying v).
-    is_u_iso=False means this is a vIso curve (fixed v, varying u).
-    """
-    try:
-        if is_u_iso:
-            curve = surface.uIso(fixed_param)
-            params = [
-                param_min + (param_max - param_min) * i / (samples - 1)
-                for i in range(samples)
-            ]
-        else:
-            curve = surface.vIso(fixed_param)
-            params = [
-                param_min + (param_max - param_min) * i / (samples - 1)
-                for i in range(samples)
-            ]
-
-        for p in params:
-            try:
-                pt = curve.value(p)
-            except Exception:
-                continue
-            if _point_on_boundary(pt, boundary_edges, tolerance):
-                return True
-        return False
-    except Exception:
-        return False
-
-
 def infer_uv_directions(
     face: Part.Face,
     all_faces: list[Part.Face],
+    boundary_shape: Part.Shape,
     tolerance: float = 1e-3,
+    boundary_tolerance: float = 0.5,
 ) -> UVDirections:
-    """Infer which UV sides of `face` are free (not shared with a neighbor).
+    """Infer which UV sides of `face` should be extended.
 
-    An edge is free if no other face in `all_faces` shares it. Free edges
-    define where the face should be extended.
+    A side is marked for extension only if:
+        1. Its edge is FREE (not shared with a neighbor face), AND
+        2. Its edge touches the user-supplied boundary curve.
 
-    Maps each free edge back to its UV side using the face's parameterization.
+    Parameters
+    ----------
+    face : Part.Face
+    all_faces : list[Part.Face]
+    boundary_shape : Part.Shape
+        The user-supplied boundary curve.
+    tolerance : float
+        Edge-matching tolerance for shared-edge detection.
+    boundary_tolerance : float
+        Distance tolerance for "edge touches boundary" check.
     """
     result = UVDirections()
 
@@ -338,12 +257,16 @@ def infer_uv_directions(
         return result
 
     surface = face.Surface
+    boundary_edges = list(boundary_shape.Edges)
+
     classifications = classify_face_edges(face, all_faces, tolerance)
 
-    # For each edge, determine which UV side it lies on by sampling
-    # points and comparing to the parameter-space boundaries.
     for edge, cls in zip(face.Edges, classifications):
         if cls != "free":
+            continue
+
+        # NEW: does this edge touch the boundary curve?
+        if not _edge_touches_boundary(edge, boundary_edges, boundary_tolerance):
             continue
 
         # Sample the edge's midpoint and find its (u, v) on the surface
@@ -353,7 +276,7 @@ def infer_uv_directions(
         except Exception:
             continue
 
-        # Which boundary is closest?
+        # Determine which UV side this edge lies on
         du_min = abs(u - u_min)
         du_max = abs(u - u_max)
         dv_min = abs(v - v_min)
@@ -366,7 +289,7 @@ def infer_uv_directions(
             result.u_pos = True
         elif d == dv_min:
             result.v_neg = True
-        elif d == dv_max:
+        else:
             result.v_pos = True
 
     return result
