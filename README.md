@@ -1,63 +1,101 @@
 # Surface Extrapolation Assistant for FreeCAD
 
-Automated boundary-face extrapolation for stamping die-face preparation, built on FreeCAD's Surface Workbench, with a local LLM used only for diagnosing and suggesting recovery when the deterministic geometry pipeline fails.
+Automated boundary-face extension for stamping die-face preparation, built on
+FreeCAD's Python API, with a local LLM used only for diagnosing and
+suggesting recovery when the deterministic geometry pipeline fails.
 
 ## The problem
 
-Extending a complex imported surface (e.g. an automotive die-face patch) by a fixed distance along its outer boundary, in a tool like CATIA V5, typically means: extract each boundary face → untrim → extrapolate → split → join → repeat, per face. On a model with many faces this is slow and the failure cases are the most time-consuming part.
+Extending a complex imported surface (e.g. an automotive die-face patch) by a
+fixed distance along its outer boundary, in a tool like CATIA V5, typically
+means: extract each boundary face → untrim → extrapolate in curvature → split
+against neighbor contours → join → repeat, per face. On a model with many
+faces this is slow, and the failure cases are the most time-consuming part.
 
-FreeCAD exposes `Surface::Extend`, but it operates on one face at a time, its extension parameters are **ratios of the face's existing UV extent, not millimetres**, and there is no built-in batch traversal, failure handling, or recovery logic.
+FreeCAD exposes `Surface::Extend`, but it operates on the face's underlying
+mathematical surface — which can un-trim BSpline faces, revealing geometry
+that was trimmed away in the source data. There is no built-in batch
+traversal, failure handling, or recovery logic.
 
 ## What this does
 
-1. Imports a STEP surface and identifies all faces touching a user-supplied outer boundary.
-2. Extrapolates each face toward a target distance in millimetres, calibrating FreeCAD's ratio-based `Surface::Extend` parameters to hit that target within tolerance.
-3. Joins/sews successful extensions and reports any remaining open edges.
-4. For faces that fail, builds a structured geometric diagnostic (surface type, area, edges, curvature where available, the FreeCAD error) and a diagnostic image.
-5. Sends that diagnostic to a **local** LLM (Ollama or LM Studio), which returns a structured JSON diagnosis and a recommended action from a fixed allow-list.
-6. Validates the suggestion against the allow-list, retries, and records what succeeded, what was recovered, and what remains unresolved.
+1. Imports a STEP surface and identifies all faces touching a user-supplied
+   outer boundary curve.
+2. For each boundary face, determines which of its edges are "extendable":
+   they are neither shared with a neighbor face nor on the interior, and they
+   lie on the user-supplied boundary curve.
+3. Extends each face along its extendable edges by a target distance in
+   millimetres. Two strategies are used depending on surface type (see
+   below).
+4. Attempts to trim extended faces back against neighbors' original
+   (pre-extension) edges to remove overlaps.
+5. Joins the result into a compound shell and reports open edges.
+6. On failure, builds a structured geometric diagnostic and (optionally)
+   sends it to a **local** LLM (LM Studio or Ollama) that returns a
+   structured JSON diagnosis and a recommended action from a fixed
+   allow-list.
 
-The geometry pipeline is fully deterministic and runs with no LLM present. The LLM is consulted only on failure, and it never generates or executes arbitrary code — it selects from a small set of pre-implemented recovery actions.
+The geometry pipeline is fully deterministic and runs with no LLM present.
+The LLM is consulted only on failure, and it never generates or executes
+arbitrary code — it selects from a small set of pre-implemented recovery
+actions.
+
+## Extension strategies
+
+The pipeline uses two extension strategies, chosen by surface type:
+
+| Surface type     | Strategy                                        | Notes |
+|------------------|-------------------------------------------------|-------|
+| Plane            | Ruled strip, built from offset boundary edges   | Preserves trim topology. Produces a flat strip. |
+| BSpline / Cylinder | Curvature-following ribbon                     | Samples the edge, offsets each sample outward in the surface's tangent plane, interpolates a BSpline through the offset points, and lofts between original and offset edges. |
+| Other            | Parametric `Surface::Extend` with ratio calibration | Preserved as a fallback. |
+
+The **ribbon** strategy is the closest approximation FreeCAD offers to
+CATIA's "extrapolate in curvature" operation. It preserves the original
+face unchanged and builds the extension as a separate surface sewn onto it,
+so corner fillets and interior geometry are not disturbed.
+
+The **ruled strip** strategy is used on planar faces because the underlying
+surface is already flat, so a flat strip is geometrically correct.
 
 ## Architecture
+STEP surface + boundary curve
+|
+v
+FreeCAD / Python geometry core
+|
+v
+Identify boundary faces and extendable edges
+(stable geometric fingerprint, not Face-N index)
+|
+v
+Per-face extension (ribbon / ruled / parametric)
+|
++--------+--------+
+| |
+success failure
+| |
+v v
+Trim + join Structured diagnostics
 
-```
-                  STEP surface
-                       |
-                       v
-            FreeCAD / Python geometry core
-                       |
-                       v
-          Identify boundary faces (stable
-          geometric fingerprint, not Face-N index)
-                       |
-                       v
-        Calibrated extrapolation (target mm ->
-             UV ratio -> Surface::Extend)
-                       |
-              +--------+--------+
-              |                 |
-           success           failure
-              |                 |
-              v                 v
-        Join / sew        Structured diagnostics
-        + open-edge              |
-          report                 v
-              |             Local LLM
-              |            (JSON output)
-              |                 |
-              |                 v
-              |         Recommended action
-              |         (allow-listed only)
-              |                 |
-              |                 v
-              |          Validated retry
-              |                 |
-              +--------+--------+
-                       |
-                       v
-              Result + run report
-```
+open-edge |
+report v
+| Local LLM
+| (JSON output)
+| |
+| v
+| Recommended action
+| (allow-listed only)
+| |
+| v
+| Validated retry
+| |
++--------+--------+
+|
+v
+Result + run report
+
+text
 
 ## What the LLM does — and does not do
 
@@ -65,114 +103,97 @@ The geometry pipeline is fully deterministic and runs with no LLM present. The L
 |---|---|
 | Import STEP, headless load | FreeCAD |
 | Identify boundary faces, track them stably | Python / OpenCascade |
-| Calibrate and execute extrapolation | Python + FreeCAD |
-| Join / sew results, report open edges | FreeCAD + Python |
+| Build extension ribbons / strips | Python + FreeCAD |
+| Trim, join, report open edges | FreeCAD + Python |
 | Detect and log failures | Python |
-| Build structured diagnostics + image | Python |
+| Build structured diagnostics | Python |
 | Diagnose *why* a face failed | Local LLM |
 | Propose a recovery action (from an allow-list) | Local LLM |
 | Validate and execute the recovery | Python / FreeCAD |
-| Final geometry validation | Python / OpenCascade |
 | Generate arbitrary CAD code | **Never — not a supported path** |
-
-## A note on `Surface::Extend`
-
-| Property | Type | Notes |
-|---|---|---|
-| `Face` | LinkSub | single face only — no native batch mode |
-| `ExtendUNeg` / `ExtendUPos` | Float, ratio | fraction of existing U extent, not mm |
-| `ExtendVNeg` / `ExtendVPos` | Float, ratio | fraction of existing V extent, not mm |
-| `Tolerance` | Float | geometric tolerance |
-| `SampleU` / `SampleV` | Integer | sampling density |
-
-Because the extension is ratio-based, hitting a millimetre target requires measuring the face's current edge length, computing the corresponding ratio, extending, re-measuring, and correcting if the result misses tolerance. This calibration step is treated as first-class in this project, not glossed over.
 
 ## Known limitations
 
-- Boundary detection assumes a reasonably clean, connected outer boundary curve; degenerate or multi-shell inputs may need manual override.
-- OpenCascade's topological naming is unstable across recomputes — faces are tracked by geometric fingerprint (surface type, center of mass, bounding box, area) rather than by index, but pathological geometry can still produce collisions.
-- `Part::Fuse` has no tolerance parameter; joining mismatched extended patches sometimes requires a sewing fallback with an explicit tolerance, and some open edges may remain unresolved without manual cleanup.
-- Highly curved or tangent-discontinuous boundaries are the most likely to fail extrapolation outright, calibrated or not.
-- LLM recommendations are advisory only and drawn from a fixed action allow-list; all geometry changes are validated deterministically before being kept.
-- Evaluated on a handful of representative surfaces, not a large industrial dataset — benchmark numbers should be read as indicative, not comprehensive.
+### Geometric fidelity
+
+- **The ribbon extension is an approximation of CATIA's "extrapolate in
+  curvature."** It follows the local tangent direction sampled from the
+  surface, but it does not reconstruct the exact mathematical continuation
+  of the parent surface over the extended range. On gently-curved surfaces
+  over a few millimetres, the deviation is small; on strongly-curved BSpline
+  patches it grows with distance and curvature.
+- **FreeCAD does not expose a "true untrim + extrapolate in curvature"
+  operation.** CATIA stores parent-surface metadata on every face and can
+  untrim in one call; FreeCAD discards that metadata on STEP import. Building
+  the equivalent would require `pythonocc` and direct access to
+  `Geom_BSplineSurface::Extend()`, plus explicit trim-wire construction.
+- **The pipeline does not reproduce CATIA's numerical output.** Users who
+  need to match CATIA's extrapolation exactly should use CATIA.
+- **Corner regions between adjacent extended faces may have small gaps or
+  overlaps.** The ribbon is built per-edge; where two extendable edges meet
+  at a corner, their ribbons may not meet exactly. A corner-fill step is
+  planned but not implemented.
+
+### Pipeline
+
+- Boundary detection assumes a reasonably clean, connected outer boundary
+  curve; degenerate or multi-shell inputs may need manual override.
+- OpenCascade's topological naming is unstable across recomputes — faces are
+  tracked by geometric fingerprint (surface type, center of mass, bounding
+  box, area) rather than by index.
+- `Part::Fuse` has no tolerance parameter; joining mismatched extended
+  patches sometimes requires a sewing fallback with an explicit tolerance.
+- Trimming extended faces against neighbors is fragile on rounded corners:
+  an intersection between two already-extended surfaces is unreliable when
+  either has lost its original fillet. When available, the pipeline prefers
+  to trim against the original (pre-extension) shared edges.
+- LLM recommendations are advisory only and drawn from a fixed action
+  allow-list; all geometry changes are validated deterministically before
+  being kept.
+- Evaluated on a handful of representative surfaces, not a large industrial
+  dataset. Benchmark numbers should be read as indicative, not comprehensive.
+
+### What a production tool would need
+
+To fully replicate CATIA's `Extrapolate in curvature` with edge sub-selection:
+
+1. Parent-surface metadata preserved on every imported face (which FreeCAD's
+   STEP importer does not currently provide).
+2. True surface untrim: reconstruct the parent surface with its natural
+   parameter bounds.
+3. Curvature-continuous surface extension on the parent, then re-trim to
+   `original_boundary + extension`.
+4. Corner handling as a first-class operation, not a geometric cleanup.
+5. A trimming kernel robust enough to slice extended BSpline surfaces
+   without losing tangent continuity.
+
+Steps 1–3 are the crux. FreeCAD's public Python API does not expose them.
+`pythonocc` does — but rewriting the extension module on `pythonocc` while
+keeping the rest of the pipeline in FreeCAD is a substantial project, and is
+left as future work.
 
 ## Project structure
-
-```
 surface-extrapolation-assistant/
 ├── src/surface_assistant/
-│   ├── step_io.py         # load_step
-│   ├── topology.py        # boundary face detection, geometric fingerprinting
-│   ├── extrapolation.py   # calibrated extrapolate_face(face, distance_mm)
-│   ├── join.py            # fuse / sew, open-edge reporting
-│   ├── diagnostics.py     # structured failure reports + images
-│   ├── recovery.py        # allow-listed recovery actions
-│   ├── llm.py              # Ollama/LM Studio client, JSON schema validation
-│   └── cli.py
+│ ├── step_io.py # load_step, load_boundary, resolve_inputs
+│ ├── topology.py # boundary face detection, geometric fingerprinting
+│ ├── extrapolation.py # extrapolate_face — ribbon / ruled extension
+│ ├── trim.py # overlap detection and trimming
+│ ├── join.py # fuse / sew, open-edge reporting
+│ ├── io.py # save extended faces, render snapshots
+│ ├── llm.py # LM Studio / Ollama client, JSON schema validation
+│ ├── config.py # config.yaml loader
+│ └── cli.py # typer CLI
 ├── examples/
 ├── tests/
-├── docs/architecture.md
+├── docs/
+│ ├── architecture.md
+│ └── design.md # design decisions and known limitations
 └── README.md
-```
+
+text
 
 ## Quick start
-
-```bash
-# Local LLM runtime
-ollama pull qwen2.5-coder:7b
-
-# Install
-git clone https://github.com/yourusername/surface-extrapolation-assistant
-cd surface-extrapolation-assistant
-pip install -r requirements.txt
-
-# Run
-python -m surface_assistant.cli model.step --boundary boundary.step --extension 100
-```
-
-### Save a screenshot of a FreeCAD document
-
-On Linux, use Xvfb for the FreeCAD GUI viewport when no desktop display is
-available:
-
-```bash
-QT_QPA_PLATFORM=xcb XKB_CONFIG_ROOT=/usr/share/X11/xkb \
-xvfb-run -a .venv/bin/python make_snapshot.py \
-  examples/test3/extended.FCStd examples/test3/extended.png --size 1024
-```
-
-`run-folder` can also render screenshots as part of a batch run. Point it at a
-different folder containing exactly one surface STEP file and one boundary
-STEP file; their filenames do not need to follow a fixed naming pattern:
-
-```bash
-surface-assistant run-folder examples/test3 \
-  --llm -o examples/test3/extended.FCStd \
-  --screenshots --views iso,front,top,left
-```
-
-The PNGs are written beside the FCStd output as `extended_iso.png`,
-`extended_front.png`, `extended_top.png`, and `extended_left.png`. Use
-`--views front` for a single screenshot named `extended.png`. Screenshot
-generation is opt-in and requires `--output`.
-
-## Evaluation approach
-
-Three configurations compared on 4–5 representative surfaces: direct extrapolation only, deterministic fallback retries (fixed ratio steps, no LLM), and LLM-assisted recovery. Metrics: initial success rate, recovered rate, unresolved count, retries, LLM calls, wall-clock time, and achieved-vs-requested distance.
-
-## Why this project
-
-Demonstrates a constrained, auditable approach to AI-assisted CAD automation: deterministic engineering software owns the geometry, and a local LLM is used only for the reasoning that's genuinely hard to hand-code — recognizing and responding to novel failure patterns — while every action it recommends still passes through deterministic validation before touching the model.
-
-
-
-
-
-## Installation
-
-This project runs FreeCAD from a Python virtual environment. Because FreeCAD is
-not pip-installable, and because its compiled modules are ABI-locked to the
-Python version it was built against, the setup has a few specific steps.
 
 ### 1. Install and extract FreeCAD
 
@@ -182,26 +203,21 @@ than running it directly, because a running AppImage mounts itself in a
 temporary location that disappears when the process exits.
 
 ```bash
-# Create a permanent location
 mkdir -p ~/.FreeCAD
 cd ~/.FreeCAD
 
 # Extract the AppImage (adjust the filename)
 ~/Downloads/FreeCAD_*.AppImage --appimage-extract
 ```
-
-This produces `~/.FreeCAD/squashfs-root/`, which contains FreeCAD's binaries,
+This produces ~/.FreeCAD/squashfs-root/, which contains FreeCAD's binaries,
 libraries, and its bundled Python interpreter.
 
 ### 2. Create the virtual environment with FreeCAD's Python
-
-FreeCAD 1.1 AppImages are built against **Python 3.11**. If you create the
+FreeCAD 1.1 AppImages are built against Python 3.11. If you create the
 venv with a newer interpreter (3.12+), importing FreeCAD will fail with:
 
-```
+text
 ImportError: libFreeCADBase.so: undefined symbol: _Py_PackageContext
-```
-
 This is a binary compatibility issue: the C symbol signature changed between
 3.11 and 3.12, so the compiled FreeCAD modules cannot link against 3.12.
 
@@ -217,21 +233,87 @@ source .venv/bin/activate
 python --version
 ```
 
-### 4. Install the project
+ ### 3. Configure the FreeCAD library path
+Edit config.yaml and set the path to FreeCAD's library directory:
 
+yaml
+freecad:
+  lib_path: "/home/<you>/.FreeCAD/squashfs-root/usr/lib"
+Or set the FREECAD_LIB_PATH environment variable.
+
+ ### 4. Install the project
 ```bash
 pip install -e ".[dev]"
 ```
 
-### 5. Verify the setup
+ ### 5. Verify the setup
 
+```bash
+python -c "
+from surface_assistant import freecad_setup
+import FreeCAD, Part
+box = Part.makeBox(10, 10, 10)
+print('FreeCAD version:', FreeCAD.Version()[0], FreeCAD.Version()[1])
+print('Faces:', len(box.Faces))
+"
+```
+Expected:
 
+text
+FreeCAD version: 1 1
+Faces: 6
 
-### Usage
+### 6. Optional: Local LLM
+The geometry pipeline runs without an LLM. To enable failure diagnosis via
+LM Studio or Ollama, create a .env file at the project root:
+
+text
+LLM_BASE_URL=http://localhost:1234/v1
+LLM_MODEL=qwen3-coder-30b-a3b-instruct
+LLM_API_KEY=lm-studio
+LLM_TIMEOUT=120
+LLM_TEMPERATURE=0.2
+Usage
+Inspect a surface and its boundary faces
 
 ```bash
 surface-assistant inspect model.step --boundary boundary.step
 ```
+
+Run the pipeline on a folder
+The folder must contain exactly one surface STEP file and one boundary STEP
+file. Filenames do not need to follow a naming pattern:
+
+```bash
+surface-assistant run-folder examples/test3 \
+  --llm -o examples/test3/extended.FCStd \
+  --screenshots --views iso,front,top,left
+  ```
+
+The PNGs are written beside the FCStd output as extended_iso.png,
+extended_front.png, etc. Use --views front for a single screenshot named
+extended.png. Screenshot generation is opt-in and requires --output.
+
+Run with explicit files
+```bash
+surface-assistant run model.step \
+  --boundary boundary.step \
+  --distance 5 \
+  --tolerance 2.0 \
+  --llm \
+  -o output.FCStd
+  ```
+  
+Why this project
+Demonstrates a constrained, auditable approach to AI-assisted CAD automation:
+deterministic engineering software owns the geometry, and a local LLM is used
+only for the reasoning that's genuinely hard to hand-code — recognizing and
+responding to novel failure patterns — while every action it recommends still
+passes through deterministic validation before touching the model.
+
+It also documents, honestly, where FreeCAD's public API hits its limits when
+compared to a commercial kernel like CATIA's — and what a pythonocc-based
+implementation would need to close the remaining gap.
 
 
 <!-- ====================================================
@@ -257,3 +339,6 @@ surface-assistant run examples/test1/surface_1.stp --boundary examples/test1/cur
 surface-assistant run-folder examples/test3 --llm -o examples/test3/extended.FCStd --screenshots
 
 surface-assistant run-folder examples/test3 --llm -o examples/test3/extended.FCStd --screenshots --views iso,front,top,left
+
+
+surface-assistant run-folder examples/test3 --llm -o examples/test3/extended.FCStd

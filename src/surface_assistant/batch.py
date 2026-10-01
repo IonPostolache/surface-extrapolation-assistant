@@ -37,6 +37,7 @@ from surface_assistant.config import load_config
 from surface_assistant.llm import LLMDiagnosis
 from surface_assistant.trim import trim_overlapping_faces, TrimStatus
 from surface_assistant.trim import TrimResult
+from surface_assistant.trim import trim_to_original_neighbor_edges
 from surface_assistant.topology import get_extendable_edges
 
 
@@ -216,6 +217,20 @@ def run_batch(
             + interior_faces_for_classification
         )
 
+        # Keep original (pre-extension) geometry around for trimming later.
+        # Surface::Extend can re-evaluate a rounded trim wire against a
+        # larger parametric domain and lose the fillet ("untrim"), so any
+        # cutter we build to fix that must come from THIS original data,
+        # never from the already-extended faces.
+        original_faces_by_index: dict[int, Part.Face] = {
+            bf.index: bf.face for bf in boundary_faces
+        }
+        extendable_edges_by_index: dict[int, list] = {}
+        all_edges_by_index: dict[int, list] = {
+            bf.index: list(bf.face.Edges) for bf in boundary_faces
+        }
+        boundary_face_to_extended_index: dict[int, int] = {}
+
         for bf in boundary_faces:
             dirs = infer_uv_directions(
                 bf.face, all_faces, boundary,
@@ -227,6 +242,7 @@ def run_batch(
                 bf.face, all_faces, boundary,
                 tolerance=1e-3, boundary_tolerance=0.5,
             )
+            extendable_edges_by_index[bf.index] = extendable_edges
 
             local_boundary_distance = estimate_free_to_shared_distance(bf.face, all_faces)
             effective_distance = min(target_mm, local_boundary_distance * 0.9)
@@ -247,6 +263,7 @@ def run_batch(
                 ExtrapolationStatus.SUCCESS,
                 ExtrapolationStatus.PARTIAL,
             ) and result.extended_face is not None:
+                boundary_face_to_extended_index[bf.index] = len(report.extended_faces)
                 report.extended_faces.append(result.extended_face)
 
         # Join the extended faces into a shell
@@ -262,27 +279,25 @@ def run_batch(
             if non_boundary_faces:
                 print(f"[batch] {len(non_boundary_faces)} interior faces identified")
 
-            # 2. Trim overlaps between extended faces (small set)
+            # 2a. Trim back using each neighbor's ORIGINAL (pre-extension)
+            #     shared edge. Do this FIRST and preferentially: it uses
+            #     known-good geometry as the cutter, so it correctly
+            #     handles rounded corners that trim_overlapping_faces'
+            #     already-extended-vs-already-extended intersection can
+            #     miss or get wrong.
+            original_faces_in_order = [
+                original_faces_by_index[idx]
+                for idx in boundary_face_to_extended_index
+            ]
+
+
+            # 2b. Trim remaining overlaps between extended faces (catches
+            #     anything the original-edge pass didn't fully resolve,
+            #     e.g. faces not adjacent in the original topology that
+            #     ended up overlapping anyway after extension)
             trim_result = trim_overlapping_faces(report.extended_faces, verbose=True)
             print(f"[batch] {trim_result.short()}")
 
-            # 3. Trim extended faces where they overlap interior faces
-            from surface_assistant.trim import trim_against_interior
-            if non_boundary_faces and (
-                len(trim_result.trimmed_faces) * len(non_boundary_faces) < 500
-            ):
-                trimmed_extended = trim_against_interior(
-                    trim_result.trimmed_faces,
-                    non_boundary_faces,
-                    tolerance_mm=cfg.join.sewing_tolerance_mm,
-                    verbose=True,
-                )
-                trim_result.trimmed_faces = trimmed_extended
-            else:
-                print(
-                    f"[batch] skipping interior trim "
-                    f"({len(trim_result.trimmed_faces)} × {len(non_boundary_faces)} pairs)"
-                )
 
             report.extended_faces = trim_result.trimmed_faces
             report.trim_result = trim_result

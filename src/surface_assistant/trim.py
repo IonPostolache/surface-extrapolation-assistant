@@ -131,6 +131,11 @@ def _build_cutting_tool(
 
     Strategy: take the intersection curve between the two faces, then
     extrude it perpendicular to base_face to make a cutting surface.
+
+    NOTE: this derives the cutter from two *already-extended* faces, which
+    is fragile at rounded corners where both sides may already be
+    malformed (see _build_cutting_tool_from_edge for the preferred path
+    when the original, pre-extension boundary geometry is available).
     """
     try:
         # Intersection curve between the two extensions
@@ -152,6 +157,51 @@ def _build_cutting_tool(
             normal = FreeCAD.Vector(0, 0, 1)
 
         # Extrude both directions so the tool fully crosses base_face
+        tool_pos = wire.extrude(normal.multiply(extension))
+        tool_neg = wire.extrude(normal.multiply(-extension))
+        return tool_pos.fuse(tool_neg)
+    except Exception:
+        return None
+
+
+def _build_cutting_tool_from_edge(
+    base_face: Part.Face,
+    original_edge: Part.Edge,
+    extension: float = 50.0,
+) -> Part.Shape | None:
+    """Build a cutting tool from a known-good, pre-extension boundary edge.
+
+    This is the preferred cutter for trimming an over-extended face back
+    to a neighbor's territory: it uses the *original* shared edge (known
+    to be correct, since it came straight from the imported STEP geometry)
+    rather than an intersection between two already-extended, possibly
+    malformed surfaces. Critical at rounded corners, where a
+    post-extension section() between two untrimmed/square-cornered
+    surfaces can be empty, multi-segment, or simply wrong.
+
+    Extrudes the edge far enough along base_face's local normal (both
+    directions) to guarantee the cutter fully crosses the over-extended
+    face.
+    """
+    try:
+        wire = Part.Wire([original_edge])
+    except Exception:
+        wire = original_edge
+
+    try:
+        # Use the normal near the edge's own midpoint rather than the
+        # face center — more representative on curved faces where the
+        # normal varies significantly across the surface.
+        mid = original_edge.CenterOfMass
+        try:
+            u, v = base_face.Surface.parameter(mid)
+            normal = base_face.normalAt(u, v)
+        except Exception:
+            normal = base_face.normalAt(0.5, 0.5)
+    except Exception:
+        normal = FreeCAD.Vector(0, 0, 1)
+
+    try:
         tool_pos = wire.extrude(normal.multiply(extension))
         tool_neg = wire.extrude(normal.multiply(-extension))
         return tool_pos.fuse(tool_neg)
@@ -287,6 +337,125 @@ def trim_overlapping_faces(
     result.trimmed_faces = current_faces
     result.trimmed_face_count = len(current_faces)
     return result
+
+
+def trim_to_original_neighbor_edges(
+    extended_faces: list[Part.Face],
+    original_boundary_faces: list[Part.Face],
+    boundary_face_to_extended_index: dict[int, int],
+    extendable_edge_sets: dict[int, list],
+    all_original_edges_by_face: dict[int, list],
+    *,
+    verbose: bool = False,
+) -> list[Part.Face]:
+    """Trim each extended face back using its neighbors' ORIGINAL edges.
+
+    This is the preferred trim pass — run it before
+    trim_overlapping_faces(). It avoids deriving cutters from
+    already-extended geometry, which is what produces the "rounded
+    corner became square" artifact: Surface::Extend can re-evaluate a
+    rounded trim wire against a larger parametric domain and lose the
+    fillet, and trimming two such faces against *each other* just
+    propagates the error. Here the cutter is always a known-good edge
+    straight from the imported STEP data.
+
+    Parameters
+    ----------
+    extended_faces : list[Part.Face]
+        The faces coming out of extrapolate_face, in boundary-face order.
+    original_boundary_faces : list[Part.Face]
+        The ORIGINAL (pre-extension) boundary faces, same order as
+        extended_faces.
+    boundary_face_to_extended_index : dict[int, int]
+        Maps a boundary face's topology index -> its position in
+        extended_faces / original_boundary_faces.
+    extendable_edge_sets : dict[int, list]
+        Per boundary-face-index, the edges that were extended (from
+        topology.get_extendable_edges). Used to skip trimming the sides
+        that were just extended — only the SHARED sides need trimming.
+    all_original_edges_by_face : dict[int, list]
+        Per boundary-face-index, all of that face's ORIGINAL edges
+        (shared + free), used to find shared edges with each neighbor.
+
+    Returns
+    -------
+    list[Part.Face]
+        Trimmed extended faces, same order/length as the input.
+    """
+    result = list(extended_faces)
+    n = len(result)
+
+    indices = list(boundary_face_to_extended_index.keys())
+
+    for a_idx in indices:
+        a_pos = boundary_face_to_extended_index[a_idx]
+        extended_a = result[a_pos]
+        extendable_a = extendable_edge_sets.get(a_idx, [])
+
+        for b_idx in indices:
+            if a_idx == b_idx:
+                continue
+            b_pos = boundary_face_to_extended_index[b_idx]
+
+            # Find the edge(s) ORIGINALLY shared between face a and face b.
+            edges_a = all_original_edges_by_face.get(a_idx, [])
+            edges_b = all_original_edges_by_face.get(b_idx, [])
+            shared_edge = None
+            for ea in edges_a:
+                if any(e is ea for e in extendable_a):
+                    continue  # this edge was extended, not shared — skip
+                for eb in edges_b:
+                    if _edges_match(ea, eb, tol=1e-3):
+                        shared_edge = ea
+                        break
+                if shared_edge is not None:
+                    break
+
+            if shared_edge is None:
+                continue  # a and b are not original neighbors
+
+            tool = _build_cutting_tool_from_edge(extended_a, shared_edge)
+            if tool is None:
+                if verbose:
+                    print(f"[trim-orig] ({a_idx},{b_idx}): could not build cutter")
+                continue
+
+            pieces = _slice_face(extended_a, tool)
+            if len(pieces) < 2:
+                continue
+
+            # Keep the piece that still contains the face's own original
+            # footprint, i.e. does NOT drift into the neighbor's original
+            # territory.
+            kept = _keep_piece_away_from_neighbor(
+                pieces, original_boundary_faces[b_pos]
+            )
+            extended_a = kept
+            if verbose:
+                print(f"[trim-orig] ({a_idx},{b_idx}): trimmed against original edge")
+
+        result[a_pos] = extended_a
+
+    return result
+
+
+def _edges_match(edge_a: Part.Edge, edge_b: Part.Edge, tol: float = 1e-3) -> bool:
+    """Loose edge equality by endpoints — duplicated locally to avoid a
+    circular import with topology.py."""
+    try:
+        va = edge_a.Vertexes
+        vb = edge_b.Vertexes
+        if len(va) < 2 or len(vb) < 2:
+            return False
+        a1, a2 = va[0].Point, va[-1].Point
+        b1, b2 = vb[0].Point, vb[-1].Point
+
+        def close(p, q):
+            return (p - q).Length < tol
+
+        return (close(a1, b1) and close(a2, b2)) or (close(a1, b2) and close(a2, b1))
+    except Exception:
+        return False
 
 
 def trim_against_interior(
