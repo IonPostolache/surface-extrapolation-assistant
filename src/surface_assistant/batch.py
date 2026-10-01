@@ -31,12 +31,14 @@ from surface_assistant.extrapolation import (
     extrapolate_face,
 )
 from surface_assistant.step_io import load_step, load_boundary
-from surface_assistant.topology import BoundaryFace, get_boundary_faces
+from surface_assistant.topology import BoundaryFace, estimate_free_to_shared_distance, get_boundary_faces
 from surface_assistant.topology import infer_uv_directions, UVDirections
 from surface_assistant.config import load_config
 from surface_assistant.llm import LLMDiagnosis
 from surface_assistant.trim import trim_overlapping_faces, TrimStatus
 from surface_assistant.trim import TrimResult
+from surface_assistant.topology import get_extendable_edges
+
 
 from surface_assistant.join import (
     JoinResult,
@@ -202,22 +204,43 @@ def run_batch(
 
         boundary_faces: list[BoundaryFace] = get_boundary_faces(shape, boundary)
         report.total_faces = len(boundary_faces)
-        all_faces = [bf.face for bf in boundary_faces]
 
+        boundary_indices = {bf.index for bf in boundary_faces}
+        interior_faces_for_classification = [
+            Part.Face(f) for i, f in enumerate(shape.Faces)
+            if i not in boundary_indices
+        ]
+
+        all_faces = (
+            [bf.face for bf in boundary_faces]
+            + interior_faces_for_classification
+        )
 
         for bf in boundary_faces:
-            # Infer which UV sides of this face touch the free boundary
-            dirs = infer_uv_directions(bf.face, all_faces, boundary, tolerance=1e-3, boundary_tolerance=0.5)
+            dirs = infer_uv_directions(
+                bf.face, all_faces, boundary,
+                tolerance=1e-3, boundary_tolerance=0.5,
+            )
             report.face_directions[bf.index] = dirs.describe()
+
+            extendable_edges = get_extendable_edges(
+                bf.face, all_faces, boundary,
+                tolerance=1e-3, boundary_tolerance=0.5,
+            )
+
+            local_boundary_distance = estimate_free_to_shared_distance(bf.face, all_faces)
+            effective_distance = min(target_mm, local_boundary_distance * 0.9)
 
             result = extrapolate_face(
                 face=bf.face,
-                distance_mm=target_mm,
+                distance_mm=effective_distance,
                 directions=dirs,
+                extendable_edges=extendable_edges,
                 tolerance_percent=tolerance_percent,
                 max_correction_passes=max_correction_passes,
                 face_index=bf.index,
             )
+
             report.results.append(result)
 
             if result.status in (
@@ -272,21 +295,28 @@ def run_batch(
             )
 
             # 5. Combine extended + interior into one compound
-            if non_boundary_faces and extended_join.sewed_shell is not None:
+            #    Works whether or not the extended faces fused into a shell.
+            if non_boundary_faces:
                 valid_interior = [f for f in non_boundary_faces if _is_valid_face(f)]
                 filtered = len(non_boundary_faces) - len(valid_interior)
                 if filtered > 0:
                     print(f"[batch] filtered {filtered} degenerate faces")
 
                 try:
-                    combined = Part.makeCompound(
-                        [extended_join.sewed_shell] + valid_interior
-                    )
+                    # Use whatever extended shape we have:
+                    #   - sewed_shell if the fuse succeeded
+                    #   - otherwise, the individual trimmed faces
+                    if extended_join.sewed_shell is not None:
+                        extended_shape = extended_join.sewed_shell
+                        extended_count = len(trim_result.trimmed_faces)
+                    else:
+                        extended_shape = Part.makeCompound(trim_result.trimmed_faces)
+                        extended_count = len(trim_result.trimmed_faces)
+
+                    combined = Part.makeCompound([extended_shape] + valid_interior)
                     extended_join.sewed_shell = combined
                     extended_join.open_edge_count = 0
-                    extended_join.input_face_count = (
-                        len(trim_result.trimmed_faces) + len(valid_interior)
-                    )
+                    extended_join.input_face_count = extended_count + len(valid_interior)
                     extended_join.method_used = "compound"
                     extended_join.status = JoinStatus.SUCCESS
                 except Exception as exc:

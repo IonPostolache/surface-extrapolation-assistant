@@ -107,8 +107,14 @@ def _find_overlap_pairs(faces: list[Part.Face]) -> list[tuple[int, int]]:
         for j in range(i + 1, n):
             if not _bounding_boxes_overlap(faces[i], faces[j]):
                 continue
-            if _faces_overlap(faces[i], faces[j]):
-                pairs.append((i, j))
+            try:
+                common = faces[i].common(faces[j])
+                # Require only a small non-zero area — corner overlaps
+                # are often a few square mm.
+                if common.Area > 1e-3:
+                    pairs.append((i, j))
+            except Exception:
+                continue
     return pairs
 
 
@@ -199,7 +205,7 @@ def _keep_piece_away_from_neighbor(
 def trim_overlapping_faces(
     faces: list[Part.Face],
     *,
-    max_iterations: int = 3,
+    max_iterations: int = 5,
     verbose: bool = False,
 ) -> TrimResult:
     """Detect and trim overlapping extended faces.

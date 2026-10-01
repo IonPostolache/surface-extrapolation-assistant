@@ -232,23 +232,6 @@ def infer_uv_directions(
     tolerance: float = 1e-3,
     boundary_tolerance: float = 0.5,
 ) -> UVDirections:
-    """Infer which UV sides of `face` should be extended.
-
-    A side is marked for extension only if:
-        1. Its edge is FREE (not shared with a neighbor face), AND
-        2. Its edge touches the user-supplied boundary curve.
-
-    Parameters
-    ----------
-    face : Part.Face
-    all_faces : list[Part.Face]
-    boundary_shape : Part.Shape
-        The user-supplied boundary curve.
-    tolerance : float
-        Edge-matching tolerance for shared-edge detection.
-    boundary_tolerance : float
-        Distance tolerance for "edge touches boundary" check.
-    """
     result = UVDirections()
 
     try:
@@ -258,25 +241,20 @@ def infer_uv_directions(
 
     surface = face.Surface
     boundary_edges = list(boundary_shape.Edges)
-
     classifications = classify_face_edges(face, all_faces, tolerance)
 
+    # For each side, track: does it have any edge that is NOT extendable?
+    # An edge is extendable if it is free AND touches the boundary curve.
+    side_extendable = {"u_neg": True, "u_pos": True, "v_neg": True, "v_pos": True}
+    side_has_any_edge = {"u_neg": False, "u_pos": False, "v_neg": False, "v_pos": False}
+
     for edge, cls in zip(face.Edges, classifications):
-        if cls != "free":
-            continue
-
-        # NEW: does this edge touch the boundary curve?
-        if not _edge_touches_boundary(edge, boundary_edges, boundary_tolerance):
-            continue
-
-        # Sample the edge's midpoint and find its (u, v) on the surface
         mid = edge.CenterOfMass
         try:
             u, v = surface.parameter(mid)
         except Exception:
             continue
 
-        # Determine which UV side this edge lies on
         du_min = abs(u - u_min)
         du_max = abs(u - u_max)
         dv_min = abs(v - v_min)
@@ -284,13 +262,27 @@ def infer_uv_directions(
         d = min(du_min, du_max, dv_min, dv_max)
 
         if d == du_min:
-            result.u_neg = True
+            side = "u_neg"
         elif d == du_max:
-            result.u_pos = True
+            side = "u_pos"
         elif d == dv_min:
-            result.v_neg = True
+            side = "v_neg"
         else:
-            result.v_pos = True
+            side = "v_pos"
+
+        side_has_any_edge[side] = True
+
+        is_free = (cls == "free")
+        on_boundary = _edge_touches_boundary(edge, boundary_edges, boundary_tolerance)
+
+        if not (is_free and on_boundary):
+            # This edge should NOT be extended → mark the whole side unextendable
+            side_extendable[side] = False
+
+    # Only extend a side if it has at least one edge and all its edges are extendable
+    for side in ("u_neg", "u_pos", "v_neg", "v_pos"):
+        if side_has_any_edge[side] and side_extendable[side]:
+            setattr(result, side, True)
 
     return result
 
@@ -324,3 +316,42 @@ def classify_face_edges(
                 break
         classifications.append("shared" if shared else "free")
     return classifications
+
+
+def estimate_free_to_shared_distance(face, all_faces, tolerance=1e-3):
+    """Estimate how far the face can extend before hitting a shared edge."""
+    classifications = classify_face_edges(face, all_faces, tolerance)
+    shared_edges = [e for e, c in zip(face.Edges, classifications) if c == "shared"]
+    if not shared_edges:
+        return float("inf")  # no shared edges, can extend freely
+    
+    # Distance from face center to nearest shared edge
+    face_center = face.CenterOfMass
+    min_dist = min((e.CenterOfMass - face_center).Length for e in shared_edges)
+    return min_dist
+
+
+def get_extendable_edges(
+    face: Part.Face,
+    all_faces: list[Part.Face],
+    boundary_shape: Part.Shape,
+    tolerance: float = 1e-3,
+    boundary_tolerance: float = 0.5,
+) -> list[Part.Edge]:
+    """Return edges of `face` that should be extended.
+
+    An edge is extendable if:
+        - it is free (not shared with any neighbor), AND
+        - it lies on the user-supplied boundary curve.
+    """
+    classifications = classify_face_edges(face, all_faces, tolerance)
+    boundary_edges = list(boundary_shape.Edges)
+
+    extendable = []
+    for edge, cls in zip(face.Edges, classifications):
+        if cls != "free":
+            continue
+        if not _edge_touches_boundary(edge, boundary_edges, boundary_tolerance):
+            continue
+        extendable.append(edge)
+    return extendable
