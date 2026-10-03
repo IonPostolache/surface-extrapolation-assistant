@@ -274,21 +274,20 @@ def run_batch(
         if report.extended_faces:
             cfg = load_config()
 
-            # 1. Compute the non-boundary (interior) faces FIRST
-            # boundary_indices = {bf.index for bf in boundary_faces}
-            # non_boundary_faces = [
-            #     Part.Face(f) for i, f in enumerate(shape.Faces)
-            #     if i not in boundary_indices
-            # ]
-            # if non_boundary_faces:
-            #     print(f"[batch] {len(non_boundary_faces)} interior faces identified")
-
-            trim_result = trim_overlapping_faces(report.extended_faces, verbose=True)
+            # Outer-boundary trim already produced clean per-face outer
+            # bands. Running trim_overlapping_faces on top is redundant
+            # and can undo the outer-trim result. Skip it, but keep the
+            # report structure.
+            from surface_assistant.trim import TrimResult, TrimStatus
+            trim_result = TrimResult(
+                status=TrimStatus.NO_OVERLAP,
+                input_face_count=len(report.extended_faces),
+                trimmed_faces=list(report.extended_faces),
+                trimmed_face_count=len(report.extended_faces),
+            )
             print(f"[batch] {trim_result.short()}")
-
-
-            report.extended_faces = trim_result.trimmed_faces
             report.trim_result = trim_result
+            # note: report.extended_faces is already the trimmed list
 
             # 4. Fuse the extended faces (small set) into a shell
             extended_join = join_faces(

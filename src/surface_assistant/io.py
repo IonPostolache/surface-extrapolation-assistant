@@ -319,6 +319,14 @@ def _trim_with_boundary_ribbon(extended_face, boundary_edges, normal, ribbon_hal
         print(f"[io] ribbon sweep failed: {exc}")
         return None
 
+    # --- DEBUG PRINT ---
+    try:
+        print(f"[ribbon-debug] face bbox: {extended_face.BoundBox}")
+        print(f"[ribbon-debug] ribbon bbox: {ribbon.BoundBox}")
+    except Exception:
+        pass
+    # --- END DEBUG ---
+
     # Split the extended face using the ribbon
     try:
         import BOPTools.SplitAPI
@@ -340,22 +348,68 @@ def _trim_with_boundary_ribbon(extended_face, boundary_edges, normal, ribbon_hal
     if not pieces:
         return None
 
+    # --- DEBUG PRINTS ---
+    print(f"[ribbon-debug] split produced {len(pieces)} piece(s)")
+    for i, p in enumerate(pieces):
+        try:
+            print(f"[ribbon-debug]   piece {i}: area={p.Area:.2f}, bbox={p.BoundBox}")
+        except Exception as e:
+            print(f"[ribbon-debug]   piece {i}: cannot read area/bbox ({e})")
+    # --- END DEBUG ---
+
     if len(pieces) == 1:
-        # The ribbon didn't actually separate anything
         return pieces[0]
 
-    # Classify pieces by area: the interior is typically the largest
-    # piece (it contains the bulk of the original surface). Keep
-    # everything except the largest — those are the outer bands.
-    pieces_sorted = sorted(pieces, key=lambda f: f.Area, reverse=True)
-    outer_pieces = pieces_sorted[1:]
+    # Classify each piece by which side of the boundary it lies on,
+    # using the same `normal` that built the ribbon. Pieces on the
+    # positive-normal side are outside (keep); negative are inside (drop).
+    try:
+        boundary_center = wire.CenterOfMass
+    except Exception:
+        boundary_center = extended_face.CenterOfMass
+
+    outer_pieces = []
+    inner_pieces = []
+    for p in pieces:
+        try:
+            p_center = p.CenterOfMass
+            d = (p_center - boundary_center).dot(n)
+            if d > 0:
+                outer_pieces.append(p)
+            else:
+                inner_pieces.append(p)
+        except Exception:
+            # If we can't classify, drop it (safer than keeping it)
+            continue
+
+    # If everything fell on one side, use a fallback: the piece whose
+    # farthest extent along `n` is largest is the outer one.
+    if not outer_pieces:
+        best_piece = None
+        best_projection = -1e18
+        for p in pieces:
+            try:
+                bb = p.BoundBox
+                corners = [
+                    FreeCAD.Vector(bb.XMin, bb.YMin, bb.ZMin),
+                    FreeCAD.Vector(bb.XMax, bb.YMax, bb.ZMax),
+                    FreeCAD.Vector(bb.XMin, bb.YMin, bb.ZMax),
+                    FreeCAD.Vector(bb.XMax, bb.YMax, bb.ZMin),
+                ]
+                max_proj = max((c - boundary_center).dot(n) for c in corners)
+                if max_proj > best_projection:
+                    best_projection = max_proj
+                    best_piece = p
+            except Exception:
+                continue
+        if best_piece is not None:
+            outer_pieces = [best_piece]
 
     if not outer_pieces:
-        # Only one piece — return it unchanged
-        return pieces_sorted[0]
+        # Nothing classified — return the original input
+        return extended_face
 
     if len(outer_pieces) == 1:
         return outer_pieces[0]
 
-    # Multiple outer pieces — return them as a compound
     return Part.makeCompound(outer_pieces)
