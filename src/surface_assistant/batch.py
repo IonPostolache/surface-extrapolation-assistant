@@ -250,14 +250,27 @@ def run_batch(
                 face_index=bf.index,
             )
             report.results.append(result)
-
             if result.status == ExtrapolationStatus.SUCCESS and result.extended_face is not None:
+                # Use the face's own normal, not a global one
+                try:
+                    face_normal = bf.face.normalAt(0.5, 0.5)
+                    # Debug: is the extension going outward or inward?
+                    try:
+                        print(f"[bbox-check] face {bf.index}: orig bbox={bf.face.BoundBox}")
+                        print(f"[bbox-check] face {bf.index}: ext  bbox={result.extended_face.BoundBox}")
+                    except Exception:
+                        pass
+                except Exception:
+                    face_normal = ref_normal
+
                 trimmed = trim_face_to_outside_boundary(
                     result.extended_face,
+                    bf.face,                # pass the original face
                     list(outer_edges),
-                    ref_normal,
-                    interior_faces=non_boundary_faces, 
-                )
+                    face_normal,
+                    interior_faces=non_boundary_faces,
+                )            
+
                 orig_area = result.extended_face.Area
                 # trim_area = trimmed.Area
                 trim_area = trimmed.Area if hasattr(trimmed, "Area") else 0.0

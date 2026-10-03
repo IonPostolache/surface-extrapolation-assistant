@@ -238,7 +238,7 @@ def split_by_outer_boundary(
 
 
 def trim_face_to_outside_boundary(
-    extended_face, boundary_edges, normal,
+    extended_face, original_face, boundary_edges, normal,
     interior_faces=None,
     extension=200.0,
 ):
@@ -247,7 +247,7 @@ def trim_face_to_outside_boundary(
 
     # --- Attempt 1: boundary-wire slab (precise) ---
     if boundary_edges:
-        result = _trim_with_boundary_ribbon(extended_face, boundary_edges, normal)
+        result = _trim_with_boundary_ribbon(extended_face, original_face, boundary_edges, normal)
         if result is not None:
             return result
 
@@ -271,7 +271,7 @@ def trim_face_to_outside_boundary(
     return extended_face
 
 
-def _trim_with_boundary_ribbon(extended_face, boundary_edges, normal, ribbon_half_width=0.1):
+def _trim_with_boundary_ribbon(extended_face, original_face, boundary_edges, normal, ribbon_half_width=0.1):
     """Split `extended_face` by a thin ribbon swept from the boundary wire.
 
     Instead of building a solid slab from the boundary (which fails when
@@ -358,58 +358,141 @@ def _trim_with_boundary_ribbon(extended_face, boundary_edges, normal, ribbon_hal
     # --- END DEBUG ---
 
     if len(pieces) == 1:
+        # The ribbon didn't actually separate anything
         return pieces[0]
 
-    # Classify each piece by which side of the boundary it lies on,
-    # using the same `normal` that built the ribbon. Pieces on the
-    # positive-normal side are outside (keep); negative are inside (drop).
+    # Compute the plane origin for the projection (center of the boundary)
     try:
         boundary_center = wire.CenterOfMass
     except Exception:
         boundary_center = extended_face.CenterOfMass
 
-    outer_pieces = []
-    inner_pieces = []
+    scores = []
     for p in pieces:
+        s = _piece_outside_score(p, boundary_edges, n, boundary_center)
         try:
-            p_center = p.CenterOfMass
-            d = (p_center - boundary_center).dot(n)
-            if d > 0:
-                outer_pieces.append(p)
-            else:
-                inner_pieces.append(p)
+            print(f"[score] piece area={p.Area:.2f}, score={s}")
         except Exception:
-            # If we can't classify, drop it (safer than keeping it)
+            pass
+        if s is None:
             continue
+        scores.append((s, p))
 
-    # If everything fell on one side, use a fallback: the piece whose
-    # farthest extent along `n` is largest is the outer one.
-    if not outer_pieces:
-        best_piece = None
-        best_projection = -1e18
-        for p in pieces:
-            try:
-                bb = p.BoundBox
-                corners = [
-                    FreeCAD.Vector(bb.XMin, bb.YMin, bb.ZMin),
-                    FreeCAD.Vector(bb.XMax, bb.YMax, bb.ZMax),
-                    FreeCAD.Vector(bb.XMin, bb.YMin, bb.ZMax),
-                    FreeCAD.Vector(bb.XMax, bb.YMax, bb.ZMin),
-                ]
-                max_proj = max((c - boundary_center).dot(n) for c in corners)
-                if max_proj > best_projection:
-                    best_projection = max_proj
-                    best_piece = p
-            except Exception:
-                continue
-        if best_piece is not None:
-            outer_pieces = [best_piece]
-
-    if not outer_pieces:
-        # Nothing classified — return the original input
+    if not scores:
         return extended_face
+
+    # Sort by score descending — pieces with the highest "outside-ness" win.
+    scores.sort(key=lambda t: t[0], reverse=True)
+
+    # The best-scoring piece is the outer band. Include any other piece
+    # that's ALSO outside (score > 0), in case the split produced multiple
+    # outer bands.
+    outer_pieces = [p for s, p in scores if s > 0]
+    if not outer_pieces:
+        # Fallback: keep the single best piece
+        outer_pieces = [scores[0][1]]
 
     if len(outer_pieces) == 1:
         return outer_pieces[0]
-
     return Part.makeCompound(outer_pieces)
+
+
+def _piece_is_inside_original_face(piece, original_face, tolerance=0.5):
+    """Test whether a piece lies on the original face's side of the ribbon."""
+    try:
+        # Sample the piece's centroid
+        c = piece.CenterOfMass
+        # Project it onto the original face's surface
+        u, v = original_face.Surface.parameter(c)
+        u_min, u_max, v_min, v_max = original_face.ParameterRange
+        # A small margin so pieces that touch the boundary count as inside
+        margin_u = (u_max - u_min) * 0.05
+        margin_v = (v_max - v_min) * 0.05
+        inside_u = (u_min - margin_u) <= u <= (u_max + margin_u)
+        inside_v = (v_min - margin_v) <= v <= (v_max + margin_v)
+        return inside_u and inside_v
+    except Exception:
+        return None
+
+def _piece_outside_score(piece, boundary_edges, plane_normal, boundary_center):
+    """Return a score: positive = piece is outside the boundary,
+    negative = inside. Magnitude is the projected distance from the
+    polygon boundary in the plane.
+    """
+    try:
+        # Build an orthonormal frame (u, v) perpendicular to plane_normal
+        n = FreeCAD.Vector(plane_normal.x, plane_normal.y, plane_normal.z)
+        if n.Length < 1e-9:
+            return None
+        n.normalize()
+
+        # Pick a reference axis not parallel to n
+        ref = FreeCAD.Vector(1, 0, 0)
+        if abs(n.dot(ref)) > 0.9:
+            ref = FreeCAD.Vector(0, 1, 0)
+
+        u_axis = ref.cross(n)
+        if u_axis.Length < 1e-9:
+            return None
+        u_axis.normalize()
+        v_axis = n.cross(u_axis)
+        v_axis.normalize()
+
+        # Project the boundary polygon to 2D
+        boundary_poly = []
+        for edge in boundary_edges:
+            for vertex in edge.Vertexes:
+                p = vertex.Point - boundary_center
+                boundary_poly.append((p.dot(u_axis), p.dot(v_axis)))
+
+        # Remove duplicate consecutive points
+        dedup = []
+        for pt in boundary_poly:
+            if not dedup or (abs(dedup[-1][0] - pt[0]) > 1e-6 or abs(dedup[-1][1] - pt[1]) > 1e-6):
+                dedup.append(pt)
+        if len(dedup) > 1 and abs(dedup[0][0] - dedup[-1][0]) < 1e-6 and abs(dedup[0][1] - dedup[-1][1]) < 1e-6:
+            dedup = dedup[:-1]
+
+        if len(dedup) < 3:
+            return None
+
+        # Project the piece centroid
+        c = piece.CenterOfMass - boundary_center
+        px, py = c.dot(u_axis), c.dot(v_axis)
+
+        # Ray-cast to determine inside/outside
+        inside = False
+        j = len(dedup) - 1
+        for i in range(len(dedup)):
+            xi, yi = dedup[i]
+            xj, yj = dedup[j]
+            if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi):
+                inside = not inside
+            j = i
+
+        # Compute distance to nearest polygon edge
+        min_dist = 1e18
+        for i in range(len(dedup)):
+            xi, yi = dedup[i]
+            xj, yj = dedup[(i + 1) % len(dedup)]
+            # Point-to-segment distance
+            dx, dy = xj - xi, yj - yi
+            seg_len_sq = dx*dx + dy*dy
+            if seg_len_sq < 1e-12:
+                d = ((px - xi)**2 + (py - yi)**2) ** 0.5
+            else:
+                t = max(0.0, min(1.0, ((px - xi) * dx + (py - yi) * dy) / seg_len_sq))
+                proj_x = xi + t * dx
+                proj_y = yi + t * dy
+                d = ((px - proj_x)**2 + (py - proj_y)**2) ** 0.5
+            if d < min_dist:
+                min_dist = d
+
+        # Signed score
+        return min_dist if not inside else -min_dist
+
+    except Exception as exc:
+        print(f"[io] point-in-polygon failed: {exc}")
+        return None
+
+
