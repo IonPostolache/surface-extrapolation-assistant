@@ -230,7 +230,6 @@ def infer_uv_directions(
     all_faces: list[Part.Face],
     boundary_shape: Part.Shape,
     tolerance: float = 1e-3,
-    boundary_tolerance: float = 0.5,
 ) -> UVDirections:
     result = UVDirections()
 
@@ -273,7 +272,7 @@ def infer_uv_directions(
         side_has_any_edge[side] = True
 
         is_free = (cls == "free")
-        on_boundary = _edge_touches_boundary(edge, boundary_edges, boundary_tolerance)
+        on_boundary = _edge_touches_boundary(edge, boundary_edges)
 
         if not (is_free and on_boundary):
             # This edge should NOT be extended → mark the whole side unextendable
@@ -336,7 +335,6 @@ def get_extendable_edges(
     all_faces: list[Part.Face],
     boundary_shape: Part.Shape,
     tolerance: float = 1e-3,
-    boundary_tolerance: float = 0.5,
 ) -> list[Part.Edge]:
     """Return edges of `face` that should be extended.
 
@@ -351,7 +349,86 @@ def get_extendable_edges(
     for edge, cls in zip(face.Edges, classifications):
         if cls != "free":
             continue
-        if not _edge_touches_boundary(edge, boundary_edges, boundary_tolerance):
+        if not _edge_touches_boundary(edge, boundary_edges):
             continue
         extendable.append(edge)
     return extendable
+
+
+def get_outer_boundary_edges(shape: Part.Shape, tolerance: float = 1e-3) -> list[Part.Edge]:
+    """Return edges on the geometric outer boundary of a shell.
+
+    An edge is on the outer boundary if exactly one face of the shape
+    contains it (i.e., it is not shared with any neighbor face).
+    """
+    all_edges = []
+    for face in shape.Faces:
+        for edge in face.Edges:
+            all_edges.append(edge)
+
+    # Count how many faces each edge belongs to
+    boundary_edges = []
+    for i, edge_a in enumerate(all_edges):
+        shared_count = 0
+        for j, edge_b in enumerate(all_edges):
+            if i == j:
+                continue
+            if _edges_match(edge_a, edge_b, tol=tolerance):
+                shared_count += 1
+        if shared_count == 0:
+            # Edge appears in only one face's edge list → outer boundary
+            boundary_edges.append(edge_a)
+    return boundary_edges
+
+
+def get_extendable_edges_for_face(
+    face: Part.Face,
+    outer_boundary_edges: list[Part.Edge],
+    tolerance: float = 1e-3,
+) -> list[Part.Edge]:
+    """Return the face's edges that lie on the outer boundary."""
+    result = []
+    for edge in face.Edges:
+        for outer in outer_boundary_edges:
+            if _edges_match(edge, outer, tol=tolerance):
+                result.append(edge)
+                break
+    return result
+
+def get_boundary_faces_no_curve(shape: Part.Shape, tolerance: float = 1e-3) -> list[BoundaryFace]:
+    """Return faces that have at least one edge on the outer boundary."""
+    outer_edges = get_outer_boundary_edges(shape, tolerance=tolerance)
+    result = []
+    for idx, face in enumerate(shape.Faces):
+        extendable = get_extendable_edges_for_face(face, outer_edges, tolerance=tolerance)
+        if extendable:
+            result.append(
+                BoundaryFace(
+                    index=idx,
+                    face=face,
+                    fingerprint=fingerprint_face(face),
+                    shared_edge_count=len(face.Edges) - len(extendable),
+                )
+            )
+    return result
+
+def get_neighbor_faces(
+    face: Part.Face,
+    all_faces: list[Part.Face],
+    tolerance: float = 1e-3,
+) -> list[Part.Face]:
+    """Return faces that share an edge with `face`."""
+    neighbors = []
+    face_edges = list(face.Edges)
+    for other in all_faces:
+        if other.isSame(face):
+            continue
+        for oe in other.Edges:
+            for fe in face_edges:
+                if _edges_match(fe, oe, tol=tolerance):
+                    neighbors.append(other)
+                    break
+            else:
+                continue
+            break
+    return neighbors

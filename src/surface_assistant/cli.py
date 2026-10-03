@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from surface_assistant import __version__
-from surface_assistant.step_io import load_step, load_boundary
+from surface_assistant.step_io import load_step
 from surface_assistant.topology import get_boundary_faces
 from surface_assistant.config import load_config
 
@@ -28,44 +28,25 @@ def version() -> None:
 
 
 @app.command()
-def inspect(
-    step_file: Path = typer.Argument(..., help="Surface STEP file"),
-    boundary_file: Path = typer.Option(
-        None, "--boundary", "-b", help="Boundary curve STEP file"
-    ),
-) -> None:
-    """Load a surface, optionally a boundary, and report boundary faces."""
+def inspect(step_file: Path = typer.Argument(..., help="Surface STEP file")) -> None:
+    """Load a surface and report boundary faces."""
+    from surface_assistant.topology import get_boundary_faces_no_curve
+
     console.rule("[bold]Load surface")
-    doc, shape = load_step(step_file)
+    _, shape = load_step(step_file)
     console.print(f"Faces: {len(shape.Faces)}  Edges: {len(shape.Edges)}")
 
-    if boundary_file is None:
-        console.print("[yellow]No boundary provided — skipping boundary detection.[/yellow]")
-        return
-
-    console.rule("[bold]Load boundary")
-    _, boundary = load_boundary(boundary_file)
-    console.print(f"Boundary edges: {len(boundary.Edges)}")
-
-    console.rule("[bold]Boundary faces")
-    faces = get_boundary_faces(shape, boundary)
+    faces = get_boundary_faces_no_curve(shape)
+    console.print(f"Boundary faces: {len(faces)}")
 
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Face #", justify="right")
     table.add_column("Type")
     table.add_column("Area (mm²)", justify="right")
-    table.add_column("Center of mass")
-    table.add_column("Shared edges", justify="right")
 
     for bf in faces:
         fp = bf.fingerprint
-        table.add_row(
-            str(bf.index),
-            fp.surface_type,
-            f"{fp.area:.3f}",
-            f"({fp.com[0]}, {fp.com[1]}, {fp.com[2]})",
-            str(bf.shared_edge_count),
-        )
+        table.add_row(str(bf.index), fp.surface_type, f"{fp.area:.3f}")
 
     console.print(table)
 
@@ -73,9 +54,6 @@ def inspect(
 @app.command()
 def run(
     step_file: Path = typer.Argument(..., help="Surface STEP file"),
-    boundary_file: Path = typer.Option(
-        ..., "--boundary", "-b", help="Boundary curve STEP file"
-    ),
     distance: float = typer.Option(
         None, "--distance", "-d",
         help="Target extrapolation distance in mm (default: config.yaml)",
@@ -115,7 +93,6 @@ def run(
 
     report = run_batch(
         step_file=step_file,
-        boundary_file=boundary_file,
         target_mm=target_mm,
         tolerance_percent=tol_percent,
         max_correction_passes=cfg.extrapolation.max_correction_passes,
@@ -149,9 +126,8 @@ def run_folder(
     from surface_assistant.batch import run_batch
     from surface_assistant.io import save_extended_faces
 
-    surface_path, boundary_path = resolve_inputs(folder)
+    surface_path = resolve_inputs(folder)
     console.print(f"[cyan]Surface :[/cyan]  {surface_path.name}")
-    console.print(f"[cyan]Boundary:[/cyan]  {boundary_path.name}")
 
     cfg = load_config()
     target_mm = distance if distance is not None else cfg.extrapolation.target_distance_mm
@@ -160,7 +136,6 @@ def run_folder(
     console.rule("[bold]Batch extrapolation")
     report = run_batch(
         step_file=surface_path,
-        boundary_file=boundary_path,
         target_mm=target_mm,
         tolerance_percent=tol_percent,
         max_correction_passes=cfg.extrapolation.max_correction_passes,

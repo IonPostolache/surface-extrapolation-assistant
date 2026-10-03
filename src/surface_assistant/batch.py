@@ -2,7 +2,7 @@
 
 This module ties together:
     - step_io.load_step / load_boundary
-    - topology.get_boundary_faces
+    - topology.get_boundary_faces_no_curve
     - extrapolation.extrapolate_face
 
 ...into a single batch operation that:
@@ -30,15 +30,19 @@ from surface_assistant.extrapolation import (
     ExtrapolationStatus,
     extrapolate_face,
 )
-from surface_assistant.step_io import load_step, load_boundary
-from surface_assistant.topology import BoundaryFace, estimate_free_to_shared_distance, get_boundary_faces
-from surface_assistant.topology import infer_uv_directions, UVDirections
+from surface_assistant.step_io import load_step
 from surface_assistant.config import load_config
 from surface_assistant.llm import LLMDiagnosis
 from surface_assistant.trim import trim_overlapping_faces, TrimStatus
 from surface_assistant.trim import TrimResult
-from surface_assistant.trim import trim_to_original_neighbor_edges
-from surface_assistant.topology import get_extendable_edges
+
+from surface_assistant.topology import (
+    BoundaryFace,
+    get_boundary_faces_no_curve,
+    get_outer_boundary_edges,
+    get_extendable_edges_for_face,
+    get_neighbor_faces
+)
 
 
 from surface_assistant.join import (
@@ -71,7 +75,6 @@ class BatchReport:
     """Aggregated outcome of a batch extrapolation run."""
 
     step_file: str
-    boundary_file: str
     target_mm: float
     tolerance_percent: float
 
@@ -88,6 +91,8 @@ class BatchReport:
     llm_diagnosis: "LLMDiagnosis | None" = None
 
     trim_result: "TrimResult | None" = None
+
+    deferred_faces: list[int] = field(default_factory=list)
 
     @property
     def successes(self) -> list[ExtrapolationResult]:
@@ -143,6 +148,10 @@ class BatchReport:
             dir_str = self.face_directions.get(r.face_index, "?")
             lines.append(f"  {r.short()}  [dirs: {dir_str}]")
 
+        if self.deferred_faces:
+            lines.append("")
+            lines.append(f"  Deferred faces (left unchanged): {self.deferred_faces}")
+
         return "\n".join(lines)
 
 
@@ -152,7 +161,6 @@ class BatchReport:
 
 def run_batch(
     step_file: str | Path,
-    boundary_file: str | Path,
     *,
     target_mm: float = 100.0,
     tolerance_percent: float = 2.0,
@@ -168,8 +176,6 @@ def run_batch(
     ----------
     step_file : str | Path
         Path to the surface STEP file.
-    boundary_file : str | Path
-        Path to the boundary curve STEP file.
     target_mm : float
         Target extrapolation distance per face, in millimetres.
     tolerance_percent : float
@@ -189,21 +195,15 @@ def run_batch(
 
     report = BatchReport(
         step_file=str(step_file),
-        boundary_file=str(boundary_file),
         target_mm=target_mm,
         tolerance_percent=tolerance_percent,
     )
 
     doc_surface = None
-    doc_boundary = None
 
     try:
         doc_surface, shape = load_step(step_file, doc_name=doc_name)
-        doc_boundary, boundary = load_boundary(
-            boundary_file, doc_name="_BoundaryCurve"
-        )
-
-        boundary_faces: list[BoundaryFace] = get_boundary_faces(shape, boundary)
+        boundary_faces: list[BoundaryFace] = get_boundary_faces_no_curve(shape)
         report.total_faces = len(boundary_faces)
 
         boundary_indices = {bf.index for bf in boundary_faces}
@@ -217,55 +217,29 @@ def run_batch(
             + interior_faces_for_classification
         )
 
-        # Keep original (pre-extension) geometry around for trimming later.
-        # Surface::Extend can re-evaluate a rounded trim wire against a
-        # larger parametric domain and lose the fillet ("untrim"), so any
-        # cutter we build to fix that must come from THIS original data,
-        # never from the already-extended faces.
-        original_faces_by_index: dict[int, Part.Face] = {
-            bf.index: bf.face for bf in boundary_faces
-        }
-        extendable_edges_by_index: dict[int, list] = {}
-        all_edges_by_index: dict[int, list] = {
-            bf.index: list(bf.face.Edges) for bf in boundary_faces
-        }
-        boundary_face_to_extended_index: dict[int, int] = {}
+        outer_edges = get_outer_boundary_edges(shape)
 
         for bf in boundary_faces:
-            dirs = infer_uv_directions(
-                bf.face, all_faces, boundary,
-                tolerance=1e-3, boundary_tolerance=0.5,
-            )
-            report.face_directions[bf.index] = dirs.describe()
-
-            extendable_edges = get_extendable_edges(
-                bf.face, all_faces, boundary,
-                tolerance=1e-3, boundary_tolerance=0.5,
-            )
-            extendable_edges_by_index[bf.index] = extendable_edges
-
-            local_boundary_distance = estimate_free_to_shared_distance(bf.face, all_faces)
-            effective_distance = min(target_mm, local_boundary_distance * 0.9)
+            extendable_edges = get_extendable_edges_for_face(bf.face, outer_edges)
+            neighbors = get_neighbor_faces(bf.face, all_faces)
+            report.face_directions[bf.index] = f"{len(extendable_edges)} edges, {len(neighbors)} neighbors"
 
             result = extrapolate_face(
                 face=bf.face,
-                distance_mm=effective_distance,
-                directions=dirs,
+                distance_mm=target_mm,
                 extendable_edges=extendable_edges,
+                neighbor_faces=neighbors,
                 tolerance_percent=tolerance_percent,
-                max_correction_passes=max_correction_passes,
                 face_index=bf.index,
             )
-
             report.results.append(result)
 
-            if result.status in (
-                ExtrapolationStatus.SUCCESS,
-                ExtrapolationStatus.PARTIAL,
-            ) and result.extended_face is not None:
-                boundary_face_to_extended_index[bf.index] = len(report.extended_faces)
+            if result.status == ExtrapolationStatus.SUCCESS and result.extended_face is not None:
                 report.extended_faces.append(result.extended_face)
-
+            elif result.status == ExtrapolationStatus.DEFERRED:
+                report.extended_faces.append(bf.face)
+                report.deferred_faces.append(bf.index)
+ 
         # Join the extended faces into a shell
         if report.extended_faces:
             cfg = load_config()
@@ -279,22 +253,6 @@ def run_batch(
             if non_boundary_faces:
                 print(f"[batch] {len(non_boundary_faces)} interior faces identified")
 
-            # 2a. Trim back using each neighbor's ORIGINAL (pre-extension)
-            #     shared edge. Do this FIRST and preferentially: it uses
-            #     known-good geometry as the cutter, so it correctly
-            #     handles rounded corners that trim_overlapping_faces'
-            #     already-extended-vs-already-extended intersection can
-            #     miss or get wrong.
-            original_faces_in_order = [
-                original_faces_by_index[idx]
-                for idx in boundary_face_to_extended_index
-            ]
-
-
-            # 2b. Trim remaining overlaps between extended faces (catches
-            #     anything the original-edge pass didn't fully resolve,
-            #     e.g. faces not adjacent in the original topology that
-            #     ended up overlapping anyway after extension)
             trim_result = trim_overlapping_faces(report.extended_faces, verbose=True)
             print(f"[batch] {trim_result.short()}")
 
@@ -374,7 +332,7 @@ def run_batch(
         return report
 
     finally:
-        for doc in (doc_boundary, doc_surface):
+        for doc in (doc_surface, ):
             if doc is None:
                 continue
             try:

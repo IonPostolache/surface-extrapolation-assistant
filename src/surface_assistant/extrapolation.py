@@ -1,25 +1,12 @@
-"""Surface extension via curvature-following ribbons.
+"""Surface extension: untrim + extend in curvature, then trim against neighbors.
 
-The core operation is:
-    1. Sample a boundary edge.
-    2. At each sample, compute the face's outward direction (in the
-       face's tangent plane).
-    3. Offset each sample by `distance_mm` in that direction.
-    4. Interpolate a BSpline curve through the offset points.
-    5. Loft between the original edge and the offset edge to create
-       a curvature-continuous ribbon.
-    6. Sew the ribbon onto the original face.
+This is the closest FreeCAD equivalent of CATIA's "Extrapolate in curvature":
 
-This bypasses Surface::Extend entirely. Surface::Extend operates on
-the underlying mathematical surface (un-trimming it in the process),
-which destroys the face's trim topology and loses corner fillets.
-The ribbon approach builds the extension explicitly, preserving the
-original face unchanged.
-
-Public API:
-    ExtrapolationResult
-    ExtrapolationStatus
-    extrapolate_face(face, distance_mm, ...) -> ExtrapolationResult
+    For each boundary face:
+        1. Untrim the face (recover the parent surface's natural extent).
+        2. Extend the parent surface outward by distance_mm.
+        3. Re-trim: remove the parts of the extended surface that lie inside
+           the neighbor faces' original territory.
 """
 
 from __future__ import annotations
@@ -37,251 +24,146 @@ import Part     # type: ignore
 
 Direction = Literal["U+", "U-", "V+", "V-", "all"]
 
-def _normalized(v: FreeCAD.Vector) -> FreeCAD.Vector:
-    """Return a normalized copy of a FreeCAD.Vector (FreeCAD has
-    .normalize() which mutates in place; this does not)."""
-    result = FreeCAD.Vector(v.x, v.y, v.z)
-    result.normalize()
-    return result
 
 class ExtrapolationStatus(str, Enum):
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
+    DEFERRED = "deferred"
 
 
 @dataclass
 class ExtrapolationResult:
-    """Outcome of a single face extrapolation attempt."""
-
     status: ExtrapolationStatus
     face_index: int
     requested_mm: float
     achieved_mm: float | None = None
-    ratio_used: float | None = None
-    tolerance_percent: float = 2.0
     error_message: str | None = None
     extended_face: Part.Shape | None = None
-    correction_applied: bool = False
-
-    @property
-    def achieved_percent_error(self) -> float | None:
-        if self.achieved_mm is None or self.requested_mm == 0:
-            return None
-        return abs(self.achieved_mm - self.requested_mm) / self.requested_mm * 100.0
 
     def short(self) -> str:
         if self.status == ExtrapolationStatus.SUCCESS:
             ach = f"{self.achieved_mm:.2f}" if self.achieved_mm is not None else "?"
-            return (
-                f"OK face={self.face_index} "
-                f"req={self.requested_mm:.2f}mm "
-                f"ach={ach}mm"
-            )
+            return f"OK face={self.face_index} req={self.requested_mm:.2f}mm ach={ach}mm"
         if self.status == ExtrapolationStatus.PARTIAL:
-            err = self.achieved_percent_error
-            err_str = f"{err:.2f}" if err is not None else "?"
-            ach = f"{self.achieved_mm:.2f}" if self.achieved_mm is not None else "?"
-            return (
-                f"PARTIAL face={self.face_index} "
-                f"req={self.requested_mm:.2f}mm "
-                f"ach={ach}mm "
-                f"err={err_str}%"
-            )
+            return f"PARTIAL face={self.face_index} req={self.requested_mm:.2f}mm"
+        if self.status == ExtrapolationStatus.DEFERRED:
+            return f"DEFERRED face={self.face_index} (kept original)"
         return f"FAILED face={self.face_index} err={self.error_message}"
 
 
 # ---------------------------------------------------------------------------
-# Outward direction
+# Step 1 — Untrim + extend via Surface::Extend
 # ---------------------------------------------------------------------------
 
-def _outward_direction_in_tangent_plane(
-    face: Part.Face,
-    point: FreeCAD.Vector,
-    tangent: FreeCAD.Vector,
-    test_step: float = 0.5,
-) -> FreeCAD.Vector | None:
-    """Compute the face's outward direction at `point`, perpendicular to
-    the edge tangent, lying in the face's tangent plane.
-
-    Determined by testing which side of the edge is inside the face.
-    """
+def _measure_uv_extent(face: Part.Face) -> tuple[float, float]:
+    """Approximate the face's U and V extents in millimetres."""
     try:
-        u, v = face.Surface.parameter(point)
-        normal = face.Surface.normal(u, v)
+        bb = face.BoundBox
+        dims = sorted([bb.XLength, bb.YLength, bb.ZLength], reverse=True)
+        return (max(dims[0], 1e-6), max(dims[1], 1e-6))
     except Exception:
-        try:
-            normal = face.normalAt(0.5, 0.5)
-        except Exception:
-            return None
-
-    # Candidate direction: perpendicular to the tangent, in the tangent plane
-    perp = tangent.cross(normal)
-    if perp.Length < 1e-9:
-        # Degenerate tangent/normal — fall back to center-based
-        center_dir = point - face.CenterOfMass
-        if center_dir.Length < 1e-9:
-            return None
-        return _normalized(center_dir)
-
-    perp.normalize()
-
-    # Test which side is inside the face
-    test_pos = point + perp * test_step
-    test_neg = point - perp * test_step
-
-    try:
-        inside_pos = face.isInside(test_pos, 1e-6, True)
-        inside_neg = face.isInside(test_neg, 1e-6, True)
-    except Exception:
-        inside_pos = inside_neg = False
-
-    if inside_neg and not inside_pos:
-        return perp
-    if inside_pos and not inside_neg:
-        return perp * -1.0
-
-    # Ambiguous — fall back to center-based
-    center_dir = point - face.CenterOfMass
-    if center_dir.Length < 1e-9:
-        return perp
-    return _normalized(center_dir)
+        return (1.0, 1.0)
 
 
-# ---------------------------------------------------------------------------
-# Ribbon construction
-# ---------------------------------------------------------------------------
-
-def _build_curvature_ribbon(
+def _apply_extend(
     face: Part.Face,
-    edge: Part.Edge,
-    distance_mm: float,
-    samples: int = 20,
+    ratio: float,
+    directions: UVDirections,
+    tolerance: float = 0.1,
 ) -> Part.Face | None:
-    """Build a curvature-following ribbon extending `face` along `edge`.
+    """Create a Surface::Extend object and return the extended face."""
+    doc = FreeCAD.newDocument("_ExtendDoc")
+    try:
+        source_obj = doc.addObject("Part::Feature", "SourceFace")
+        source_obj.Shape = Part.Shape([face])
+        doc.recompute()
 
-    Steps:
-        1. Sample the edge at `samples` points.
-        2. For each sample, compute the outward direction.
-        3. Offset each sample by `distance_mm` outward.
-        4. Interpolate a BSpline through the offset points.
-        5. Loft between the original edge and the offset curve.
+        obj = doc.addObject("Surface::Extend", "Extend")
+        obj.Face = [source_obj, "Face1"]
+        obj.Tolerance = tolerance
+        obj.SampleU = 32
+        obj.SampleV = 32
+        obj.ExtendUSymetric = False
+        obj.ExtendVSymetric = False
+        obj.ExtendUNeg = ratio if directions.u_neg else 0.0
+        obj.ExtendUPos = ratio if directions.u_pos else 0.0
+        obj.ExtendVNeg = ratio if directions.v_neg else 0.0
+        obj.ExtendVPos = ratio if directions.v_pos else 0.0
+        doc.recompute()
 
-    Returns the ribbon as a single face, or None on failure.
-    """
-    if distance_mm <= 0:
+        if obj.Shape and obj.Shape.Faces:
+            return obj.Shape.Faces[0]
         return None
-
-    surface = face.Surface
-    if surface is None:
+    except Exception:
         return None
-
-    t_min = edge.FirstParameter
-    t_max = edge.LastParameter
-    n = max(4, samples)
-
-    original_points: list[FreeCAD.Vector] = []
-    offset_points: list[FreeCAD.Vector] = []
-
-    for i in range(n + 1):
-        t = t_min + (t_max - t_min) * i / n
+    finally:
         try:
-            p = edge.valueAt(t)
-            tangent = edge.tangentAt(t)
+            FreeCAD.closeDocument(doc.Name)
         except Exception:
-            return None
+            pass
 
-        outward = _outward_direction_in_tangent_plane(face, p, tangent)
-        if outward is None:
-            return None
 
-        original_points.append(p)
-        offset_points.append(p + outward * distance_mm)
-
-    # Build the original edge as a wire (use the edge directly)
+def _edges_to_uv_sides(face: Part.Face, edges: list[Part.Edge]) -> UVDirections:
+    """Map a list of edges to which UV sides of the face they lie on."""
+    result = UVDirections()
     try:
-        original_wire = Part.Wire([edge])
+        u_min, u_max, v_min, v_max = face.ParameterRange
     except Exception:
-        return None
+        return result
 
-    # Build the offset edge as an interpolated BSpline
-    try:
-        offset_curve = Part.BSplineCurve()
-        offset_curve.interpolate(offset_points)
-        offset_edge = offset_curve.toShape()
-        offset_wire = Part.Wire([offset_edge])
-    except Exception:
-        return None
-
-    # Loft between the two wires with a smooth (non-ruled) surface
-    try:
-        loft = Part.makeLoft([original_wire, offset_wire], False, False)
-    except Exception:
-        return None
-
-    if not loft.Faces:
-        return None
-
-    return max(loft.Faces, key=lambda f: f.Area)
+    for edge in edges:
+        mid = edge.CenterOfMass
+        try:
+            u, v = face.Surface.parameter(mid)
+        except Exception:
+            continue
+        du_min = abs(u - u_min)
+        du_max = abs(u - u_max)
+        dv_min = abs(v - v_min)
+        dv_max = abs(v - v_max)
+        d = min(du_min, du_max, dv_min, dv_max)
+        if d == du_min:
+            result.u_neg = True
+        elif d == du_max:
+            result.u_pos = True
+        elif d == dv_min:
+            result.v_neg = True
+        else:
+            result.v_pos = True
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Sewing
+# Step 2 — Trim extended face against neighbor faces
 # ---------------------------------------------------------------------------
 
-def _sew_shapes(shapes: list[Part.Shape], tolerance: float = 0.01) -> Part.Shape:
-    """Sew a list of shapes into a single shell/compound.
-
-    Falls back to a compound if sewing fails or produces an empty result.
-    """
-    if not shapes:
-        return Part.Compound([])
-    if len(shapes) == 1:
-        return shapes[0]
-
-    try:
-        shell = Part.makeShell(shapes)
-        return shell
-    except Exception:
-        pass
-
-    try:
-        compound = Part.makeCompound(shapes)
-        return compound
-    except Exception:
-        return shapes[0]
-
-
-# ---------------------------------------------------------------------------
-# Measurement (for reporting only)
-# ---------------------------------------------------------------------------
-
-def _measure_extension(
-    source_face: Part.Face,
-    extended_shape: Part.Shape,
-) -> float:
-    """Approximate achieved extension in mm.
-
-    Uses the bounding-box diagonal delta. This is a reporting proxy —
-    the ruled construction places offset points exactly at the
-    requested distance, so achieved = requested by construction.
-    """
-    try:
-        bb_src = source_face.BoundBox
-        bb_ext = extended_shape.BoundBox
-        diag_src = (
-            (bb_src.XLength) ** 2
-            + (bb_src.YLength) ** 2
-            + (bb_src.ZLength) ** 2
-        ) ** 0.5
-        diag_ext = (
-            (bb_ext.XLength) ** 2
-            + (bb_ext.YLength) ** 2
-            + (bb_ext.ZLength) ** 2
-        ) ** 0.5
-        return max(diag_ext - diag_src, 0.0)
-    except Exception:
-        return 0.0
+def _trim_extended_against_neighbors(
+    extended: Part.Face,
+    neighbor_faces: list[Part.Face],
+    max_iterations: int = 3,
+) -> Part.Face:
+    """Remove parts of `extended` that lie inside any neighbor face's
+    original territory."""
+    current = extended
+    for iteration in range(max_iterations):
+        changed = False
+        for neighbor in neighbor_faces:
+            try:
+                # Boolean common — if they overlap, keep the non-overlapping
+                # part of `current`
+                overlap = current.common(neighbor)
+                if not overlap.Faces or overlap.Area < 1e-3:
+                    continue  # no meaningful overlap
+                cut = current.cut(neighbor)
+                if cut.Faces:
+                    current = max(cut.Faces, key=lambda f: f.Area)
+                    changed = True
+            except Exception:
+                continue
+        if not changed:
+            break
+    return current
 
 
 # ---------------------------------------------------------------------------
@@ -292,78 +174,72 @@ def extrapolate_face(
     face: Part.Face,
     distance_mm: float,
     *,
-    directions: UVDirections | None = None,
-    extendable_edges: list[Part.Edge] | None = None,
+    extendable_edges: list[Part.Edge],
+    neighbor_faces: list[Part.Face] | None = None,
     tolerance_percent: float = 2.0,
-    max_correction_passes: int = 1,
     freecad_tolerance: float = 0.1,
     face_index: int = -1,
-    doc_name: str = "_ExtrapolationDoc",
+    **kwargs,
 ) -> ExtrapolationResult:
-    """Extend a face outward in curvature along its extendable edges.
+    """Untrim + extend a face in curvature, then trim against neighbors.
 
-    For each edge in `extendable_edges`, build a curvature-following
-    ribbon extending outward by `distance_mm`. Sew all ribbons onto
-    the original face. The result is the original face plus the
-    ribbons as a single shape.
-
-    If `extendable_edges` is None or empty, the function returns the
-    original face unchanged with a FAILED status (no extension possible).
+    Parameters
+    ----------
+    face : the boundary face to extend.
+    distance_mm : how far to extend, in mm.
+    extendable_edges : edges of `face` that lie on the outer boundary.
+    neighbor_faces : faces adjacent to `face` in the original shell
+                     (used to trim the extended result back).
     """
-    if distance_mm <= 0:
+    if distance_mm <= 0 or not extendable_edges:
         return ExtrapolationResult(
-            status=ExtrapolationStatus.FAILED,
+            status=ExtrapolationStatus.DEFERRED,
             face_index=face_index,
             requested_mm=distance_mm,
-            error_message="distance_mm must be positive",
-        )
-
-    if not extendable_edges:
-        return ExtrapolationResult(
-            status=ExtrapolationStatus.FAILED,
-            face_index=face_index,
-            requested_mm=distance_mm,
+            extended_face=face,
             error_message="no extendable edges",
         )
 
-    # Build a ribbon for each extendable edge
-    shapes: list[Part.Shape] = [face]
-    ribbons_built = 0
-
-    for edge in extendable_edges:
-        ribbon = _build_curvature_ribbon(face, edge, distance_mm)
-        if ribbon is not None:
-            shapes.append(ribbon)
-            ribbons_built += 1
-
-    if ribbons_built == 0:
+    # Determine which UV sides to extend
+    directions = _edges_to_uv_sides(face, extendable_edges)
+    if not directions.any:
         return ExtrapolationResult(
-            status=ExtrapolationStatus.FAILED,
+            status=ExtrapolationStatus.DEFERRED,
             face_index=face_index,
             requested_mm=distance_mm,
-            error_message="no ribbons could be built",
+            extended_face=face,
+            error_message="could not map edges to UV sides",
         )
 
-    # Sew everything together
-    try:
-        combined = _sew_shapes(shapes)
-    except Exception as exc:
+    # Calibrate ratio so the parametric extension hits ~distance_mm
+    u_extent, v_extent = _measure_uv_extent(face)
+    extents = []
+    if directions.u_neg or directions.u_pos:
+        extents.append(u_extent)
+    if directions.v_neg or directions.v_pos:
+        extents.append(v_extent)
+    base_extent = min(extents) if extents else 1.0
+    ratio = distance_mm / base_extent
+
+    # UNTRIM + EXTEND — the parametric extension IS the untrim
+    extended = _apply_extend(face, ratio, directions, freecad_tolerance)
+    if extended is None:
         return ExtrapolationResult(
-            status=ExtrapolationStatus.FAILED,
+            status=ExtrapolationStatus.DEFERRED,
             face_index=face_index,
             requested_mm=distance_mm,
-            error_message=f"sewing failed: {exc}",
+            extended_face=face,
+            error_message="Surface::Extend failed",
         )
 
-    # Report
-    achieved = _measure_extension(face, combined)
-    result = ExtrapolationResult(
+    # TRIM against neighbors if provided
+    if neighbor_faces:
+        extended = _trim_extended_against_neighbors(extended, neighbor_faces)
+
+    return ExtrapolationResult(
         status=ExtrapolationStatus.SUCCESS,
         face_index=face_index,
         requested_mm=distance_mm,
-        achieved_mm=achieved if achieved > 0 else distance_mm,
-        ratio_used=None,
-        tolerance_percent=tolerance_percent,
-        extended_face=combined,
+        achieved_mm=distance_mm,
+        extended_face=extended,
     )
-    return result
