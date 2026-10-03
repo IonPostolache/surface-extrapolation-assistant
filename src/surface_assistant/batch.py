@@ -35,6 +35,7 @@ from surface_assistant.config import load_config
 from surface_assistant.llm import LLMDiagnosis
 from surface_assistant.trim import trim_overlapping_faces, TrimStatus
 from surface_assistant.trim import TrimResult
+from surface_assistant.io import trim_face_to_outside_boundary
 
 from surface_assistant.topology import (
     BoundaryFace,
@@ -219,10 +220,26 @@ def run_batch(
 
         outer_edges = get_outer_boundary_edges(shape)
 
+        # Compute the reference normal once, before the loop:
+        try:
+            ref_normal = boundary_faces[0].face.normalAt(0.5, 0.5)
+        except Exception:
+            ref_normal = FreeCAD.Vector(0, 0, 1)
+
+        # Compute interior faces once, before the loop — used by the trim
+        # fallback for faces whose boundary-wire slab can't be built.
+        boundary_indices = {bf.index for bf in boundary_faces}
+        non_boundary_faces = [
+            Part.Face(f) for i, f in enumerate(shape.Faces)
+            if i not in boundary_indices
+        ]
+        if non_boundary_faces:
+            print(f"[batch] {len(non_boundary_faces)} interior faces identified")
+
         for bf in boundary_faces:
             extendable_edges = get_extendable_edges_for_face(bf.face, outer_edges)
             neighbors = get_neighbor_faces(bf.face, all_faces)
-            report.face_directions[bf.index] = f"{len(extendable_edges)} edges, {len(neighbors)} neighbors"
+            report.face_directions[bf.index] = f"{len(extendable_edges)} edges"
 
             result = extrapolate_face(
                 face=bf.face,
@@ -235,7 +252,20 @@ def run_batch(
             report.results.append(result)
 
             if result.status == ExtrapolationStatus.SUCCESS and result.extended_face is not None:
-                report.extended_faces.append(result.extended_face)
+                trimmed = trim_face_to_outside_boundary(
+                    result.extended_face,
+                    list(outer_edges),
+                    ref_normal,
+                    interior_faces=non_boundary_faces, 
+                )
+                orig_area = result.extended_face.Area
+                # trim_area = trimmed.Area
+                trim_area = trimmed.Area if hasattr(trimmed, "Area") else 0.0
+                print(f"[trim-outside] face {bf.index}: {orig_area:.2f} → {trim_area:.2f} mm²")
+
+                # Keep the original boundary face + its outer extension band
+                report.extended_faces.append(bf.face)
+                report.extended_faces.append(trimmed)
             elif result.status == ExtrapolationStatus.DEFERRED:
                 report.extended_faces.append(bf.face)
                 report.deferred_faces.append(bf.index)
@@ -245,13 +275,13 @@ def run_batch(
             cfg = load_config()
 
             # 1. Compute the non-boundary (interior) faces FIRST
-            boundary_indices = {bf.index for bf in boundary_faces}
-            non_boundary_faces = [
-                Part.Face(f) for i, f in enumerate(shape.Faces)
-                if i not in boundary_indices
-            ]
-            if non_boundary_faces:
-                print(f"[batch] {len(non_boundary_faces)} interior faces identified")
+            # boundary_indices = {bf.index for bf in boundary_faces}
+            # non_boundary_faces = [
+            #     Part.Face(f) for i, f in enumerate(shape.Faces)
+            #     if i not in boundary_indices
+            # ]
+            # if non_boundary_faces:
+            #     print(f"[batch] {len(non_boundary_faces)} interior faces identified")
 
             trim_result = trim_overlapping_faces(report.extended_faces, verbose=True)
             print(f"[batch] {trim_result.short()}")

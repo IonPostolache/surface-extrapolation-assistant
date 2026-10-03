@@ -126,3 +126,236 @@ def render_fcstd_to_png_subprocess(
     except Exception as e:
         print(f"[render] Unexpected error: {e}")
         return False
+
+def split_by_outer_boundary(
+    joined_shape: Part.Shape,
+    boundary_edges: list[Part.Edge],
+    extension_direction: FreeCAD.Vector | None = None,
+    extension_length: float = 100.0,
+) -> tuple[Part.Shape | None, Part.Shape | None]:
+    """Split `joined_shape` by the wire formed by `boundary_edges`.
+
+    The boundary wire must fully cross the shape for the split to work.
+    If it's a closed loop that lies on the surface (as the initial
+    surface's outer boundary typically is), we need to extrude it into
+    a cutting surface first.
+
+    Returns
+    -------
+    (outside_piece, inside_piece)
+        The two pieces, or (None, None) on failure.
+    """
+    if not boundary_edges:
+        return None, None
+
+    try:
+        # Build the boundary wire
+        boundary_wire = Part.Wire(boundary_edges)
+    except Exception:
+        try:
+            boundary_wire = Part.Compound(boundary_edges)
+        except Exception:
+            return None, None
+
+    # Build a cutting surface from the wire
+    # Use the extension direction (usually the average surface normal)
+    if extension_direction is None:
+        try:
+            extension_direction = joined_shape.normalAt(0.5, 0.5)
+        except Exception:
+            extension_direction = FreeCAD.Vector(0, 0, 1)
+
+    try:
+        # Extrude the wire both ways to ensure it fully crosses the shape
+        tool_pos = boundary_wire.extrude(extension_direction * extension_length)
+        tool_neg = boundary_wire.extrude(-extension_direction * extension_length)
+        cutting_tool = tool_pos.fuse(tool_neg)
+    except Exception:
+        return None, None
+
+    # Slice
+    try:
+        import BOPTools.SplitAPI
+        result = BOPTools.SplitAPI.slice(
+            joined_shape, [cutting_tool], "Standard", 0.0
+        )
+        pieces = list(result.Faces) if hasattr(result, "Faces") else []
+    except Exception:
+        pieces = []
+
+    if not pieces:
+        # Fallback: try Shape.split
+        try:
+            split_result = joined_shape.split(cutting_tool)
+            pieces = list(split_result.Faces) if hasattr(split_result, "Faces") else []
+        except Exception:
+            pieces = []
+
+    if not pieces:
+        return None, None
+
+    # Classify pieces as inside or outside the boundary
+    # "Inside" = piece whose centroid is on the side where the boundary
+    # is shared with the interior faces. Simpler heuristic: piece whose
+    # centroid is closer to the original surface's interior.
+    # For a first pass, classify by which side the piece's bbox center sits.
+    inside_piece = None
+    outside_piece = None
+
+    # Use the joined shape's own center of mass as the "interior" reference
+    interior_ref = joined_shape.CenterOfMass
+
+    # Compare each piece's distance from the interior reference to the
+    # boundary
+    inside_candidates = []
+    outside_candidates = []
+    for p in pieces:
+        try:
+            p_center = p.CenterOfMass
+            dist_to_interior = (p_center - interior_ref).Length
+            inside_candidates.append((dist_to_interior, p))
+        except Exception:
+            continue
+
+    if not inside_candidates:
+        return None, None
+
+    # Sort: the piece closest to interior_ref is "inside"
+    inside_candidates.sort(key=lambda t: t[0])
+    inside_piece = inside_candidates[0][1]
+    outside_pieces = [p for _, p in inside_candidates[1:]]
+
+    # Combine all outside pieces
+    if len(outside_pieces) == 1:
+        outside_piece = outside_pieces[0]
+    elif len(outside_pieces) > 1:
+        try:
+            outside_piece = Part.makeCompound(outside_pieces)
+        except Exception:
+            outside_piece = outside_pieces[0]
+
+    return outside_piece, inside_piece
+
+
+def trim_face_to_outside_boundary(
+    extended_face, boundary_edges, normal,
+    interior_faces=None,
+    extension=200.0,
+):
+    if extended_face is None:
+        return extended_face
+
+    # --- Attempt 1: boundary-wire slab (precise) ---
+    if boundary_edges:
+        result = _trim_with_boundary_ribbon(extended_face, boundary_edges, normal)
+        if result is not None:
+            return result
+
+    # --- Attempt 2: bounding-box fallback (crude but always works) ---
+    if interior_faces:
+        try:
+            bbox = Part.makeCompound(interior_faces).BoundBox
+            margin = 5.0
+            box = Part.makeBox(
+                bbox.XLength + 2*margin,
+                bbox.YLength + 2*margin,
+                bbox.ZLength + 2*margin,
+                FreeCAD.Vector(bbox.XMin - margin, bbox.YMin - margin, bbox.ZMin - margin),
+            )
+            result = extended_face.cut(box)
+            if result.Faces:
+                return result
+        except Exception as exc:
+            print(f"[io] bbox fallback failed: {exc}")
+
+    return extended_face
+
+
+def _trim_with_boundary_ribbon(extended_face, boundary_edges, normal, ribbon_half_width=0.1):
+    """Split `extended_face` by a thin ribbon swept from the boundary wire.
+
+    Instead of building a solid slab from the boundary (which fails when
+    the boundary is non-planar), we sweep the boundary wire along the
+    local surface normal by ±ribbon_half_width to create a very thin
+    surface ribbon. Then we use OCC's split to partition the extended
+    face along that ribbon, and keep the outer piece.
+
+    This is the FreeCAD equivalent of the CATIA technique of using a
+    narrow sweep as the splitting tool for complex trimmed surfaces.
+    """
+    try:
+        wire = Part.Wire(boundary_edges)
+    except Exception:
+        try:
+            wire = Part.Compound(boundary_edges)
+        except Exception:
+            return None
+
+    # Close the wire if needed
+    try:
+        if not wire.isClosed():
+            vertices = wire.Vertexes
+            if len(vertices) >= 2:
+                start = vertices[0].Point
+                end = vertices[-1].Point
+                if (start - end).Length > 1e-6:
+                    closing = Part.LineSegment(end, start).toShape()
+                    wire = Part.Wire(list(wire.Edges) + [closing])
+    except Exception:
+        pass
+
+    # Sweep the wire along the normal in BOTH directions by ribbon_half_width.
+    # This creates a thin "band" surface centered on the boundary.
+    n = FreeCAD.Vector(normal.x, normal.y, normal.z)
+    if n.Length < 1e-9:
+        return None
+    n.normalize()
+
+    try:
+        ribbon_pos = wire.extrude(n * ribbon_half_width)
+        ribbon_neg = wire.extrude(-n * ribbon_half_width)
+        ribbon = ribbon_pos.fuse(ribbon_neg)
+    except Exception as exc:
+        print(f"[io] ribbon sweep failed: {exc}")
+        return None
+
+    # Split the extended face using the ribbon
+    try:
+        import BOPTools.SplitAPI
+        pieces = BOPTools.SplitAPI.slice(extended_face, [ribbon], "Standard", 0.0)
+        pieces = list(pieces.Faces)
+    except Exception as exc:
+        print(f"[io] BOPTools split failed: {exc}")
+        pieces = []
+
+    if not pieces:
+        # Fallback: manual split via Shape.split
+        try:
+            split_result = extended_face.split(ribbon)
+            pieces = list(split_result.Faces)
+        except Exception as exc:
+            print(f"[io] Shape.split failed: {exc}")
+            return None
+
+    if not pieces:
+        return None
+
+    if len(pieces) == 1:
+        # The ribbon didn't actually separate anything
+        return pieces[0]
+
+    # Classify pieces by area: the interior is typically the largest
+    # piece (it contains the bulk of the original surface). Keep
+    # everything except the largest — those are the outer bands.
+    pieces_sorted = sorted(pieces, key=lambda f: f.Area, reverse=True)
+    outer_pieces = pieces_sorted[1:]
+
+    if not outer_pieces:
+        # Only one piece — return it unchanged
+        return pieces_sorted[0]
+
+    if len(outer_pieces) == 1:
+        return outer_pieces[0]
+
+    # Multiple outer pieces — return them as a compound
+    return Part.makeCompound(outer_pieces)
