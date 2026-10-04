@@ -1,60 +1,48 @@
-# Recommended Plan — Surface Extrapolation Assistant for FreeCAD
+# Design log — what was built, what was abandoned, and why
 
-## Plan (9 working days)
+## Final architecture
 
-**Day 1 — Load, traverse, identify boundary faces**
-- `load_step(path)` → import into a headless FreeCAD document (`FreeCADCmd`), return the shape.
-- `get_boundary_faces(shape, boundary_curve)` — topological traversal: faces sharing an edge with the supplied outer boundary.
-- Geometric fingerprinting from the start: each face gets an ID derived from surface type + center of mass + bounding box + area, not its transient `Face7`-style index.
-- Visual check: dump the candidate faces to a compound/color overlay so you can confirm selection before running anything destructive.
-- **Deliverable:** correct, stable boundary-face list on 2–3 simple test shapes (cylinder sector, planar patch with a BSpline edge).
+- Single STEP file input.
+- Boundary faces detected topologically via `get_boundary_faces_no_curve`.
+- Extension via two strategies: ruled strips for planar faces, curvature
+  ribbons for BSpline and cylindrical faces.
+- Trim via a thin ribbon extruded from the surface's outer boundary;
+  pieces are classified by a 2D point-in-polygon score.
+- Join via `Part::Fuse`, fallback to `Part::Sewing`.
 
-**Day 2 — Calibrated extrapolation**
-- Wrap `Surface::Extend`. Since it takes UV ratios, not millimetres: measure the face's current extent along the relevant edge, compute the ratio for a target `distance_mm`, apply, re-measure the resulting edge, and do one correction pass if off by more than your tolerance (e.g. 2%).
-- `extrapolate_face(face, distance_mm)` becomes the honest public API, with the ratio math hidden inside.
-- Per-face success/failure logging (face ID, requested/achieved distance, FreeCAD error text if any).
-- **Deliverable:** single-face extrapolation that reliably hits a millimetre target within tolerance, or reports why it couldn't.
+## Approaches tried and abandoned
 
-**Day 3 — Batch processing + sewing (part 1)**
-- Loop over all boundary faces; one failure must not halt the batch.
-- Attempt to join successful extensions with `Part::Fuse` + `Part::RefineShape`; where that fails, fall back to sewing (`Part::Sewing` / `BRepBuilderAPI_Sewing` via the Python API) with an explicit tolerance.
-- Report remaining open edges after join/sew — this number matters more than "success rate" for judging real usefulness.
-- **Deliverable:** batch loop with a join/sew stage that reports what did and didn't knit together.
+1. **Parametric `Surface::Extend` with ratio calibration** — abandoned
+   because it un-trims BSpline faces, revealing parent-surface geometry
+   that wasn't part of the original face.
 
-**Day 4 — Sewing (part 2) + diagnostics extraction**
-- Finish hardening the join/sew step against mismatched or overlapping extended patches (this is where most real time will go — budget for it).
-- Build the structured failure diagnostic: surface type, area, edge count and lengths, bounding box, degree/periodicity where extractable, and the raw FreeCAD error.
-- Generate a simple diagnostic image (failed face highlighted against its boundary) for later LLM/human use.
-- **Deliverable:** every failed face produces a structured JSON diagnostic + an image, and the join stage has a defined tolerance behavior.
+2. **Ruled strips for all faces** — abandoned for curved faces because
+   the strip is flat and doesn't follow the surface's curvature.
 
-**Day 5 — Local LLM diagnosis**
-- Ollama or LM Studio via an OpenAI-compatible endpoint.
-- Enforce JSON-only output (Ollama's `format: "json"`, or a Pydantic-validated parse against a schema either way — don't trust the model to self-police formatting).
-- Prompt: structured geometry diagnostic in, `{diagnosis, confidence, recommended_actions[]}` out.
-- Allow-listed actions only: `reduce_extension`, `retry`, `split_face`, `skip_face`. The LLM never emits Python or touches the document directly.
-- **Deliverable:** a deliberately hard face (high curvature, tangent discontinuity) gets a structured, plausible diagnosis.
+3. **Slab cut by the interior boundary** — abandoned because the
+   projection to a planar slab loses fillet curvature at the corners.
 
-**Day 6 — Recovery loop**
-- Validate the LLM's suggestion against the allow-list and parameter bounds before executing anything.
-- Retry with the recommended parameters; record initial success / recovered / unresolved.
-- Minimal CLI: run a file, see the per-face table, see what got recovered.
-- **Deliverable:** end-to-end deterministic → fail → diagnose → validate → retry loop.
+4. **Per-interior-face slab cuts** — abandoned because 46 sequential
+   boolean cuts remove the correct extension along with the spill.
 
-**Day 7 — Evaluation**
-- Run baseline (direct extrapolation only), deterministic-retry (fixed fallback ratios, no LLM), and LLM-assisted recovery across 4–5 real/representative surfaces (not just toy primitives — at least one exported from a real stamped/die-face-like model if you have access to one from your CAE background).
-- Record: initial success rate, recovered rate, unresolved count, retries, LLM calls, wall-clock time, achieved-vs-requested distance.
-- Be honest in the writeup if the LLM's contribution is marginal on some cases — that honesty is more convincing than an inflated benchmark.
-- **Deliverable:** a benchmark table you can defend if someone pushes on it.
+5. **Ribbon split by the interior boundary wire** — abandoned because
+   the split produces pieces that don't correspond to inside/outside
+   of the contour when the contour is a curved 3D loop.
 
-**Day 8 — Documentation + limitations**
-- Write the architecture doc and the "what the LLM does / doesn't do" table.
-- Write "Known Limitations" honestly (see README below).
-- Clean up inline docs and the repo structure.
+6. **Second-pass trim for pathological faces** — abandoned; the current
+   pipeline detects "trim had no effect" and marks the face as
+   `DEFERRED` instead of trying more elaborate strategies.
 
-**Day 9 — Portfolio packaging**
-- 30–60s screen capture: load STEP → boundary highlight → batch run → a failure → LLM diagnosis → recovery → final joined result.
-- Final README pass, LICENSE, requirements.txt, example STEP files or generation scripts, clean commit history.
-- Push public.
+## Known limitations carried forward
 
-## Explicitly out of scope for V1
-Conversational natural-language control (Draft 4's Day 5, Draft 2's Day 5) is a reasonable V2 feature but adds a translation layer of failure modes on top of a project that already has plenty. Cutting it buys the time the sewing step and honest calibration actually need.
+- Large BSpline faces that wrap the whole part cannot be trimmed; they
+  are kept unchanged and reported as `DEFERRED`.
+- The ribbon extension approximates CATIA's "extrapolate in curvature";
+  it does not reconstruct the exact mathematical continuation of the
+  parent surface.
+
+## What a future version would do differently
+
+- Move the extension module to `pythonocc` for direct access to
+  `Geom_BSplineSurface::Extend()` and explicit trim-wire construction.
+- Add a corner-handling step for the ribbon joints.

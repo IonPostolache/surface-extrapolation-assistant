@@ -127,115 +127,6 @@ def render_fcstd_to_png_subprocess(
         print(f"[render] Unexpected error: {e}")
         return False
 
-def split_by_outer_boundary(
-    joined_shape: Part.Shape,
-    boundary_edges: list[Part.Edge],
-    extension_direction: FreeCAD.Vector | None = None,
-    extension_length: float = 100.0,
-) -> tuple[Part.Shape | None, Part.Shape | None]:
-    """Split `joined_shape` by the wire formed by `boundary_edges`.
-
-    The boundary wire must fully cross the shape for the split to work.
-    If it's a closed loop that lies on the surface (as the initial
-    surface's outer boundary typically is), we need to extrude it into
-    a cutting surface first.
-
-    Returns
-    -------
-    (outside_piece, inside_piece)
-        The two pieces, or (None, None) on failure.
-    """
-    if not boundary_edges:
-        return None, None
-
-    try:
-        # Build the boundary wire
-        boundary_wire = Part.Wire(boundary_edges)
-    except Exception:
-        try:
-            boundary_wire = Part.Compound(boundary_edges)
-        except Exception:
-            return None, None
-
-    # Build a cutting surface from the wire
-    # Use the extension direction (usually the average surface normal)
-    if extension_direction is None:
-        try:
-            extension_direction = joined_shape.normalAt(0.5, 0.5)
-        except Exception:
-            extension_direction = FreeCAD.Vector(0, 0, 1)
-
-    try:
-        # Extrude the wire both ways to ensure it fully crosses the shape
-        tool_pos = boundary_wire.extrude(extension_direction * extension_length)
-        tool_neg = boundary_wire.extrude(-extension_direction * extension_length)
-        cutting_tool = tool_pos.fuse(tool_neg)
-    except Exception:
-        return None, None
-
-    # Slice
-    try:
-        import BOPTools.SplitAPI
-        result = BOPTools.SplitAPI.slice(
-            joined_shape, [cutting_tool], "Standard", 0.0
-        )
-        pieces = list(result.Faces) if hasattr(result, "Faces") else []
-    except Exception:
-        pieces = []
-
-    if not pieces:
-        # Fallback: try Shape.split
-        try:
-            split_result = joined_shape.split(cutting_tool)
-            pieces = list(split_result.Faces) if hasattr(split_result, "Faces") else []
-        except Exception:
-            pieces = []
-
-    if not pieces:
-        return None, None
-
-    # Classify pieces as inside or outside the boundary
-    # "Inside" = piece whose centroid is on the side where the boundary
-    # is shared with the interior faces. Simpler heuristic: piece whose
-    # centroid is closer to the original surface's interior.
-    # For a first pass, classify by which side the piece's bbox center sits.
-    inside_piece = None
-    outside_piece = None
-
-    # Use the joined shape's own center of mass as the "interior" reference
-    interior_ref = joined_shape.CenterOfMass
-
-    # Compare each piece's distance from the interior reference to the
-    # boundary
-    inside_candidates = []
-    outside_candidates = []
-    for p in pieces:
-        try:
-            p_center = p.CenterOfMass
-            dist_to_interior = (p_center - interior_ref).Length
-            inside_candidates.append((dist_to_interior, p))
-        except Exception:
-            continue
-
-    if not inside_candidates:
-        return None, None
-
-    # Sort: the piece closest to interior_ref is "inside"
-    inside_candidates.sort(key=lambda t: t[0])
-    inside_piece = inside_candidates[0][1]
-    outside_pieces = [p for _, p in inside_candidates[1:]]
-
-    # Combine all outside pieces
-    if len(outside_pieces) == 1:
-        outside_piece = outside_pieces[0]
-    elif len(outside_pieces) > 1:
-        try:
-            outside_piece = Part.makeCompound(outside_pieces)
-        except Exception:
-            outside_piece = outside_pieces[0]
-
-    return outside_piece, inside_piece
-
 
 def trim_face_to_outside_boundary(
     extended_face, original_face, boundary_edges, normal,
@@ -319,13 +210,6 @@ def _trim_with_boundary_ribbon(extended_face, original_face, boundary_edges, nor
         print(f"[io] ribbon sweep failed: {exc}")
         return None
 
-    # --- DEBUG PRINT ---
-    try:
-        print(f"[ribbon-debug] face bbox: {extended_face.BoundBox}")
-        print(f"[ribbon-debug] ribbon bbox: {ribbon.BoundBox}")
-    except Exception:
-        pass
-    # --- END DEBUG ---
 
     # Split the extended face using the ribbon
     try:
@@ -348,15 +232,6 @@ def _trim_with_boundary_ribbon(extended_face, original_face, boundary_edges, nor
     if not pieces:
         return None
 
-    # --- DEBUG PRINTS ---
-    print(f"[ribbon-debug] split produced {len(pieces)} piece(s)")
-    for i, p in enumerate(pieces):
-        try:
-            print(f"[ribbon-debug]   piece {i}: area={p.Area:.2f}, bbox={p.BoundBox}")
-        except Exception as e:
-            print(f"[ribbon-debug]   piece {i}: cannot read area/bbox ({e})")
-    # --- END DEBUG ---
-
     if len(pieces) == 1:
         # The ribbon didn't actually separate anything
         return pieces[0]
@@ -370,10 +245,6 @@ def _trim_with_boundary_ribbon(extended_face, original_face, boundary_edges, nor
     scores = []
     for p in pieces:
         s = _piece_outside_score(p, boundary_edges, n, boundary_center)
-        try:
-            print(f"[score] piece area={p.Area:.2f}, score={s}")
-        except Exception:
-            pass
         if s is None:
             continue
         scores.append((s, p))
@@ -396,23 +267,6 @@ def _trim_with_boundary_ribbon(extended_face, original_face, boundary_edges, nor
         return outer_pieces[0]
     return Part.makeCompound(outer_pieces)
 
-
-def _piece_is_inside_original_face(piece, original_face, tolerance=0.5):
-    """Test whether a piece lies on the original face's side of the ribbon."""
-    try:
-        # Sample the piece's centroid
-        c = piece.CenterOfMass
-        # Project it onto the original face's surface
-        u, v = original_face.Surface.parameter(c)
-        u_min, u_max, v_min, v_max = original_face.ParameterRange
-        # A small margin so pieces that touch the boundary count as inside
-        margin_u = (u_max - u_min) * 0.05
-        margin_v = (v_max - v_min) * 0.05
-        inside_u = (u_min - margin_u) <= u <= (u_max + margin_u)
-        inside_v = (v_min - margin_v) <= v <= (v_max + margin_v)
-        return inside_u and inside_v
-    except Exception:
-        return None
 
 def _piece_outside_score(piece, boundary_edges, plane_normal, boundary_center):
     """Return a score: positive = piece is outside the boundary,
@@ -494,5 +348,3 @@ def _piece_outside_score(piece, boundary_edges, plane_normal, boundary_center):
     except Exception as exc:
         print(f"[io] point-in-polygon failed: {exc}")
         return None
-
-

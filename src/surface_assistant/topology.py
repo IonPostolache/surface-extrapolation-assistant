@@ -114,8 +114,6 @@ def get_boundary_faces(
     ----------
     shape : Part.Shape
         The surface to be extrapolated.
-    boundary_shape : Part.Shape
-        The user-supplied outer boundary (wire / edge / compound).
     tolerance : float
         Distance tolerance used when matching edges.
 
@@ -174,7 +172,7 @@ def describe_faces(faces: Iterable[BoundaryFace]) -> str:
 
 For each of the four UV sides (U-, U+, V-, V+), sample the
 isoparametric curve at that boundary and check whether the sampled
-points lie on any edge of the user-supplied boundary curve.
+points lie on any boundary edge.
 
 This tells us which sides to extend: only the sides that are part
 of the free outer boundary, not the sides shared with neighbor faces.
@@ -339,8 +337,7 @@ def get_extendable_edges(
     """Return edges of `face` that should be extended.
 
     An edge is extendable if:
-        - it is free (not shared with any neighbor), AND
-        - it lies on the user-supplied boundary curve.
+        - it is free (not shared with any neighbor)
     """
     classifications = classify_face_edges(face, all_faces, tolerance)
     boundary_edges = list(boundary_shape.Edges)

@@ -6,7 +6,7 @@ This module ties together:
     - extrapolation.extrapolate_face
 
 ...into a single batch operation that:
-    1. Loads a surface and a boundary curve
+    1. Loads a surface
     2. Identifies boundary faces
     3. Extrapolates each face
     4. Collects results (successes, partials, failures)
@@ -33,8 +33,6 @@ from surface_assistant.extrapolation import (
 from surface_assistant.step_io import load_step
 from surface_assistant.config import load_config
 from surface_assistant.llm import LLMDiagnosis
-from surface_assistant.trim import trim_overlapping_faces, TrimStatus
-from surface_assistant.trim import TrimResult
 from surface_assistant.io import trim_face_to_outside_boundary
 
 from surface_assistant.topology import (
@@ -44,13 +42,12 @@ from surface_assistant.topology import (
     get_extendable_edges_for_face,
     get_neighbor_faces
 )
-
+from enum import Enum
 
 from surface_assistant.join import (
     JoinResult,
     JoinStatus,
-    join_faces,
-    _count_open_edges,
+    join_faces,    
 )
 
 def _is_valid_face(face: Part.Face, min_area: float = 1e-6) -> bool:
@@ -66,6 +63,42 @@ def _is_valid_face(face: Part.Face, min_area: float = 1e-6) -> bool:
     except Exception:
         return False
 
+
+class TrimStatus(str, Enum):
+    SUCCESS = "success"           # no overlaps needed trimming, or all trimmed
+    PARTIAL = "partial"           # some trims succeeded, some failed
+    FAILED = "failed"             # trimming failed entirely
+    NO_OVERLAP = "no_overlap"     # no overlaps detected
+
+
+@dataclass
+class TrimResult:
+    """Outcome of a trim pass over extended faces."""
+
+    status: TrimStatus
+    input_face_count: int
+    trimmed_face_count: int = 0
+    overlap_pairs_found: int = 0
+    overlaps_resolved: int = 0
+    trimmed_faces: list[Part.Face] = field(default_factory=list)
+    error_message: str | None = None
+
+    def short(self) -> str:
+        if self.status == TrimStatus.NO_OVERLAP:
+            return f"TRIM no_overlap faces={self.input_face_count}"
+        if self.status == TrimStatus.SUCCESS:
+            return (
+                f"TRIM OK faces={self.input_face_count} "
+                f"pairs={self.overlap_pairs_found} "
+                f"resolved={self.overlaps_resolved}"
+            )
+        if self.status == TrimStatus.PARTIAL:
+            return (
+                f"TRIM PARTIAL faces={self.input_face_count} "
+                f"pairs={self.overlap_pairs_found} "
+                f"resolved={self.overlaps_resolved}"
+            )
+        return f"TRIM FAILED err={self.error_message}"
 
 # ---------------------------------------------------------------------------
 # Report types
@@ -134,7 +167,7 @@ class BatchReport:
             lines.append(f"  {self.join_result.short()}")
         if self.llm_diagnosis is not None:
             lines.append("")
-            lines.append("  LLM diagnosis:")
+            lines.append("  AI diagnosis:")
             lines.append(f"    {self.llm_diagnosis.diagnosis}")
             lines.append(f"    confidence: {self.llm_diagnosis.confidence:.2f}")
             if self.llm_diagnosis.recommended_actions:
@@ -159,13 +192,25 @@ class BatchReport:
 # ---------------------------------------------------------------------------
 # Batch runner
 # ---------------------------------------------------------------------------
+def _try_render_png(output_fcstd: Path | None) -> Path | None:
+    """Render the FCStd output to a PNG for the LLM. Returns None on failure."""
+    if output_fcstd is None:
+        return None
+    try:
+        png_path = Path(output_fcstd).with_suffix(".png")
+        from surface_assistant.io import render_fcstd_to_png_subprocess
+        if render_fcstd_to_png_subprocess(Path(output_fcstd), png_path):
+            return png_path
+    except Exception as exc:
+        print(f"[batch] PNG render failed: {exc}")
+    return None
+
 
 def run_batch(
     step_file: str | Path,
     *,
     target_mm: float = 100.0,
     tolerance_percent: float = 2.0,
-    direction: str = "all",
     max_correction_passes: int = 1,
     doc_name: str = "_BatchSurface",
     use_llm: bool = False, 
@@ -181,8 +226,6 @@ def run_batch(
         Target extrapolation distance per face, in millimetres.
     tolerance_percent : float
         Acceptable deviation from `target_mm`, as a percentage.
-    direction : str
-        "U+", "U-", "V+", "V-", or "all".
     max_correction_passes : int
         Correction passes per face if the first attempt misses tolerance.
     doc_name : str
@@ -251,34 +294,39 @@ def run_batch(
             )
             report.results.append(result)
             if result.status == ExtrapolationStatus.SUCCESS and result.extended_face is not None:
-                # Use the face's own normal, not a global one
                 try:
                     face_normal = bf.face.normalAt(0.5, 0.5)
-                    # Debug: is the extension going outward or inward?
-                    try:
-                        print(f"[bbox-check] face {bf.index}: orig bbox={bf.face.BoundBox}")
-                        print(f"[bbox-check] face {bf.index}: ext  bbox={result.extended_face.BoundBox}")
-                    except Exception:
-                        pass
                 except Exception:
                     face_normal = ref_normal
 
                 trimmed = trim_face_to_outside_boundary(
                     result.extended_face,
-                    bf.face,                # pass the original face
+                    bf.face,
                     list(outer_edges),
                     face_normal,
                     interior_faces=non_boundary_faces,
-                )            
+                )
 
                 orig_area = result.extended_face.Area
-                # trim_area = trimmed.Area
                 trim_area = trimmed.Area if hasattr(trimmed, "Area") else 0.0
                 print(f"[trim-outside] face {bf.index}: {orig_area:.2f} → {trim_area:.2f} mm²")
 
-                # Keep the original boundary face + its outer extension band
-                report.extended_faces.append(bf.face)
-                report.extended_faces.append(trimmed)
+                # Decide which to keep: the trimmed result if the trim did
+                # something meaningful, otherwise the untrimmed extension.
+                # A "meaningful" reduction is anything more than 1 mm².
+                if abs(orig_area - trim_area) < 1.0:
+                    # Trim didn't reduce anything — keep the untrimmed extension
+                    # and flag it in the report.
+                    report.extended_faces.append(bf.face)
+                    report.extended_faces.append(result.extended_face)
+                    report.deferred_faces.append(bf.index)
+                    print(f"[batch] face {bf.index}: kept original + untrimmed "
+                          f"extension (trim had no effect)")
+                else:
+                    # Trim worked — keep the trimmed band + the original face
+                    report.extended_faces.append(bf.face)
+                    report.extended_faces.append(trimmed)
+
             elif result.status == ExtrapolationStatus.DEFERRED:
                 report.extended_faces.append(bf.face)
                 report.deferred_faces.append(bf.index)
@@ -287,11 +335,9 @@ def run_batch(
         if report.extended_faces:
             cfg = load_config()
 
-            # Outer-boundary trim already produced clean per-face outer
-            # bands. Running trim_overlapping_faces on top is redundant
+            # Outer-boundary trim already produced clean per-face outer bands. 
             # and can undo the outer-trim result. Skip it, but keep the
             # report structure.
-            from surface_assistant.trim import TrimResult, TrimStatus
             trim_result = TrimResult(
                 status=TrimStatus.NO_OVERLAP,
                 input_face_count=len(report.extended_faces),
@@ -347,29 +393,27 @@ def run_batch(
                 except Exception as exc:  # noqa: BLE001
                     print(f"[batch] FCStd save failed: {exc}")
 
-            # LLM diagnosis on failure
-            if use_llm and report.join_result.status != JoinStatus.SUCCESS:
-                from surface_assistant.llm import diagnose
+            # AI diagnosis on failure
+            if use_llm:
+                # Case 1: join failed
+                if report.join_result.status != JoinStatus.SUCCESS:
+                    from surface_assistant.llm import diagnose
+                    png_path = _try_render_png(output_fcstd)
+                    report.llm_diagnosis = diagnose(
+                        report.join_result,
+                        report.results,
+                        image_path=png_path,
+                    )
 
-                png_path = None
-                if output_fcstd is not None:
-                    try:
-                        png_path = Path(output_fcstd).with_suffix(".png")
-                        from surface_assistant.io import render_fcstd_to_png_subprocess
-                        success = render_fcstd_to_png_subprocess(
-                            Path(output_fcstd), png_path
-                        )
-                        if not success:
-                            png_path = None
-                    except Exception as exc:
-                        print(f"[batch] PNG render failed: {exc}")
-                        png_path = None
-
-                report.llm_diagnosis = diagnose(
-                    report.join_result,
-                    report.results,
-                    image_path=png_path,
-                )
+                # Case 2: some faces were deferred (trim had no effect)
+                elif report.deferred_faces:
+                    from surface_assistant.llm import diagnose_deferred_faces
+                    png_path = _try_render_png(output_fcstd)
+                    report.llm_diagnosis = diagnose_deferred_faces(
+                        report.deferred_faces,
+                        report.results,
+                        image_path=png_path,
+                    )
 
         return report
 

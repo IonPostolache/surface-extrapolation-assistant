@@ -67,12 +67,12 @@ def run(
         help="Save extended faces to this .FCStd file",
     ),
     llm: bool = typer.Option(
-        False, "--llm",
-        help="Use local LLM for failure diagnostics",
+        False, "--ai",
+        help="Use local AI for failure diagnostics",
     ),
     llm_verbose: bool = typer.Option(
-        False, "--llm-verbose",
-        help="Print the raw LLM response",
+        False, "--ai-verbose",
+        help="Print the raw AI response",
     ),
 ) -> None:
     """Batch-extrapolate all boundary faces of a surface."""
@@ -102,16 +102,15 @@ def run(
     console.print(report.summary())
 
     if output is not None:
-        # saved = save_extended_faces(report, output)
         console.print(f"[green]Saved to[/green] {output}")
 
 @app.command()
 def run_folder(
-    folder: Path = typer.Argument(..., help="Folder containing surface.stp and curve.stp"),
+    folder: Path = typer.Argument(..., help="Folder containing surface.stp file"),
     distance: float = typer.Option(None, "--distance", "-d"),
     tolerance: float = typer.Option(None, "--tolerance", "-t"),
     output: Path = typer.Option(None, "--output", "-o"),
-    llm: bool = typer.Option(False, "--llm"),
+    llm: bool = typer.Option(False, "--ai"),
     screenshots: bool = typer.Option(
         False, "--screenshots", help="Save PNG screenshots of the output document"
     ),
