@@ -18,21 +18,58 @@ import Part  # type: ignore
 def save_extended_faces(report, output_path: Path) -> Path:
     """Save extended faces from a BatchReport to a .FCStd file.
 
-    If the path ends in .step or .stp, the faces are also exported
-    as STEP. Otherwise only the FCStd document is written.
+    Also includes the original input surface as a separate, colored
+    object, and makes the joined shell visible on top.
     """
     output_path = Path(output_path)
     doc = FreeCAD.newDocument("_SavedOutput")
 
+    # 1. Add each individual extended face as an object, but hide them
+    #    by default — the JoinedShell is the useful view.
+    extended_objs = []
     for i, face in enumerate(report.extended_faces):
         obj = doc.addObject("Part::Feature", f"Extended_{i}")
         obj.Shape = face
+        extended_objs.append(obj)
 
+    # 2. Add the joined shell, made visible
+    joined_obj = None
     if report.join_result and report.join_result.sewed_shell is not None:
-        joined = doc.addObject("Part::Feature", "JoinedShell")
-        joined.Shape = report.join_result.sewed_shell
+        joined_obj = doc.addObject("Part::Feature", "JoinedShell")
+        joined_obj.Shape = report.join_result.sewed_shell
+
+    # 3. Add the original input surface (if available), made visible
+    #    with a different color.
+    original_obj = None
+    if getattr(report, "original_shape", None) is not None:
+        original_obj = doc.addObject("Part::Feature", "OriginalSurface")
+        original_obj.Shape = report.original_shape
 
     doc.recompute()
+
+    # 4. Set visibility and colors (best-effort — only works with a GUI)
+    try:
+        # Hide the individual extended faces
+        for obj in extended_objs:
+            if obj.ViewObject is not None:
+                obj.ViewObject.Visibility = False
+
+        # Show the joined shell, colored light grey
+        if joined_obj is not None and joined_obj.ViewObject is not None:
+            joined_obj.ViewObject.Visibility = True
+            joined_obj.ViewObject.ShapeColor = (0.75, 0.75, 0.75)  # light grey
+            joined_obj.ViewObject.LineColor = (0.15, 0.15, 0.15)   # dark edges
+
+        # Show the original surface, colored amber/orange
+        if original_obj is not None and original_obj.ViewObject is not None:
+            original_obj.ViewObject.Visibility = True
+            original_obj.ViewObject.ShapeColor = (0.95, 0.70, 0.15)  # amber
+            original_obj.ViewObject.LineColor = (0.40, 0.30, 0.05)
+            original_obj.ViewObject.Transparency = 40  # semi-transparent
+    except Exception as exc:
+        # No GUI available (e.g. running headless) — skip visual settings.
+        print(f"[io] view settings skipped (no GUI): {exc}")
+
     doc.saveAs(str(output_path))
 
     if output_path.suffix.lower() in (".step", ".stp"):

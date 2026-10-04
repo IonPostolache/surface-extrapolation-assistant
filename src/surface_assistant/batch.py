@@ -128,6 +128,8 @@ class BatchReport:
 
     deferred_faces: list[int] = field(default_factory=list)
 
+    original_shape: Part.Shape | None = None
+
     @property
     def successes(self) -> list[ExtrapolationResult]:
         return [r for r in self.results
@@ -247,6 +249,7 @@ def run_batch(
 
     try:
         doc_surface, shape = load_step(step_file, doc_name=doc_name)
+        report.original_shape = shape
         boundary_faces: list[BoundaryFace] = get_boundary_faces_no_curve(shape)
         report.total_faces = len(boundary_faces)
 
