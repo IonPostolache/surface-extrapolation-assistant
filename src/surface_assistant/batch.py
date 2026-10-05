@@ -217,6 +217,7 @@ def run_batch(
     doc_name: str = "_BatchSurface",
     use_llm: bool = False, 
     output_fcstd: Path | None = None,
+    strategy: str = "per_face",   # "per_face" or "whole_surface"
 ) -> BatchReport:
     """Run extrapolation over all boundary faces of a STEP surface.
 
@@ -248,175 +249,202 @@ def run_batch(
     doc_surface = None
 
     try:
+        # --- Load the surface (common to both strategies) ---
         doc_surface, shape = load_step(step_file, doc_name=doc_name)
         report.original_shape = shape
-        boundary_faces: list[BoundaryFace] = get_boundary_faces_no_curve(shape)
-        report.total_faces = len(boundary_faces)
-
-        boundary_indices = {bf.index for bf in boundary_faces}
-        interior_faces_for_classification = [
-            Part.Face(f) for i, f in enumerate(shape.Faces)
-            if i not in boundary_indices
-        ]
-
-        all_faces = (
-            [bf.face for bf in boundary_faces]
-            + interior_faces_for_classification
-        )
 
         outer_edges = get_outer_boundary_edges(shape)
 
-        # Compute the reference normal once, before the loop:
-        try:
-            ref_normal = boundary_faces[0].face.normalAt(0.5, 0.5)
-        except Exception:
-            ref_normal = FreeCAD.Vector(0, 0, 1)
+        if strategy == "whole_surface":
+            # --- Whole-surface strategy ---
+            from surface_assistant.extrapolation import extrapolate_surface_as_whole
 
-        # Compute interior faces once, before the loop — used by the trim
-        # fallback for faces whose boundary-wire slab can't be built.
-        boundary_indices = {bf.index for bf in boundary_faces}
-        non_boundary_faces = [
-            Part.Face(f) for i, f in enumerate(shape.Faces)
-            if i not in boundary_indices
-        ]
-        if non_boundary_faces:
-            print(f"[batch] {len(non_boundary_faces)} interior faces identified")
-
-        for bf in boundary_faces:
-            extendable_edges = get_extendable_edges_for_face(bf.face, outer_edges)
-            neighbors = get_neighbor_faces(bf.face, all_faces)
-            report.face_directions[bf.index] = f"{len(extendable_edges)} edges"
-
-            result = extrapolate_face(
-                face=bf.face,
-                distance_mm=target_mm,
-                extendable_edges=extendable_edges,
-                neighbor_faces=neighbors,
-                tolerance_percent=tolerance_percent,
-                face_index=bf.index,
-            )
-            report.results.append(result)
-            if result.status == ExtrapolationStatus.SUCCESS and result.extended_face is not None:
+            try:
+                boundary_wire = Part.Wire(list(outer_edges))
+            except Exception:
                 try:
-                    face_normal = bf.face.normalAt(0.5, 0.5)
+                    boundary_wire = Part.Compound(list(outer_edges))
                 except Exception:
-                    face_normal = ref_normal
+                    boundary_wire = None
 
-                trimmed = trim_face_to_outside_boundary(
-                    result.extended_face,
-                    bf.face,
-                    list(outer_edges),
-                    face_normal,
-                    interior_faces=non_boundary_faces,
+            whole_ext = None
+            if boundary_wire is not None:
+                whole_ext = extrapolate_surface_as_whole(
+                    outer_boundary_wire=boundary_wire,
+                    surface_shape=shape,
+                    distance_mm=target_mm,
                 )
 
-                orig_area = result.extended_face.Area
-                trim_area = trimmed.Area if hasattr(trimmed, "Area") else 0.0
-                print(f"[trim-outside] face {bf.index}: {orig_area:.2f} → {trim_area:.2f} mm²")
+            if whole_ext is not None:
+                report.extended_faces.append(whole_ext)
+                report.join_result = JoinResult(
+                    status=JoinStatus.SUCCESS,
+                    input_face_count=1,
+                    method_used="whole_surface",
+                    sewed_shell=whole_ext,
+                    open_edge_count=0,
+                )
+                print("[batch] whole-surface extension succeeded")
+            else:
+                report.join_result = JoinResult(
+                    status=JoinStatus.FAILED,
+                    input_face_count=0,
+                    method_used="whole_surface",
+                    error_message="extrapolate_surface_as_whole returned None",
+                )
+                print("[batch] whole-surface extension failed")
 
-                # Decide which to keep: the trimmed result if the trim did
-                # something meaningful, otherwise the untrimmed extension.
-                # A "meaningful" reduction is anything more than 1 mm².
-                if abs(orig_area - trim_area) < 1.0:
-                    # Trim didn't reduce anything — keep the untrimmed extension
-                    # and flag it in the report.
-                    report.extended_faces.append(bf.face)
-                    report.extended_faces.append(result.extended_face)
-                    report.deferred_faces.append(bf.index)
-                    print(f"[batch] face {bf.index}: kept original + untrimmed "
-                          f"extension (trim had no effect)")
-                else:
-                    # Trim worked — keep the trimmed band + the original face
-                    report.extended_faces.append(bf.face)
-                    report.extended_faces.append(trimmed)
+        else:
+            # --- Per-face strategy ---
+            boundary_faces: list[BoundaryFace] = get_boundary_faces_no_curve(shape)
+            report.total_faces = len(boundary_faces)
 
-            elif result.status == ExtrapolationStatus.DEFERRED:
-                report.extended_faces.append(bf.face)
-                report.deferred_faces.append(bf.index)
- 
-        # Join the extended faces into a shell
-        if report.extended_faces:
-            cfg = load_config()
+            boundary_indices = {bf.index for bf in boundary_faces}
+            interior_faces_for_classification = [
+                Part.Face(f) for i, f in enumerate(shape.Faces)
+                if i not in boundary_indices
+            ]
 
-            # Outer-boundary trim already produced clean per-face outer bands. 
-            # and can undo the outer-trim result. Skip it, but keep the
-            # report structure.
-            trim_result = TrimResult(
-                status=TrimStatus.NO_OVERLAP,
-                input_face_count=len(report.extended_faces),
-                trimmed_faces=list(report.extended_faces),
-                trimmed_face_count=len(report.extended_faces),
-            )
-            print(f"[batch] {trim_result.short()}")
-            report.trim_result = trim_result
-            # note: report.extended_faces is already the trimmed list
-
-            # 4. Fuse the extended faces (small set) into a shell
-            extended_join = join_faces(
-                trim_result.trimmed_faces,
-                tolerance_mm=cfg.join.sewing_tolerance_mm,
-                refine=cfg.join.refine_shape,
+            all_faces = (
+                [bf.face for bf in boundary_faces]
+                + interior_faces_for_classification
             )
 
-            # 5. Combine extended + interior into one compound
-            #    Works whether or not the extended faces fused into a shell.
+            # Compute the reference normal once, before the loop:
+            try:
+                ref_normal = boundary_faces[0].face.normalAt(0.5, 0.5)
+            except Exception:
+                ref_normal = FreeCAD.Vector(0, 0, 1)
+
+            boundary_indices = {bf.index for bf in boundary_faces}
+            non_boundary_faces = [
+                Part.Face(f) for i, f in enumerate(shape.Faces)
+                if i not in boundary_indices
+            ]
             if non_boundary_faces:
-                valid_interior = [f for f in non_boundary_faces if _is_valid_face(f)]
-                filtered = len(non_boundary_faces) - len(valid_interior)
-                if filtered > 0:
-                    print(f"[batch] filtered {filtered} degenerate faces")
+                print(f"[batch] {len(non_boundary_faces)} interior faces identified")
 
-                try:
-                    # Use whatever extended shape we have:
-                    #   - sewed_shell if the fuse succeeded
-                    #   - otherwise, the individual trimmed faces
-                    if extended_join.sewed_shell is not None:
-                        extended_shape = extended_join.sewed_shell
-                        extended_count = len(trim_result.trimmed_faces)
+
+            for bf in boundary_faces:
+                extendable_edges = get_extendable_edges_for_face(bf.face, outer_edges)
+                neighbors = get_neighbor_faces(bf.face, all_faces)
+                report.face_directions[bf.index] = f"{len(extendable_edges)} edges"
+
+                result = extrapolate_face(
+                    face=bf.face,
+                    distance_mm=target_mm,
+                    extendable_edges=extendable_edges,
+                    neighbor_faces=neighbors,
+                    tolerance_percent=tolerance_percent,
+                    face_index=bf.index,
+                )
+                report.results.append(result)
+                if result.status == ExtrapolationStatus.SUCCESS and result.extended_face is not None:
+                    try:
+                        face_normal = bf.face.normalAt(0.5, 0.5)
+                    except Exception:
+                        face_normal = ref_normal
+
+                    trimmed = trim_face_to_outside_boundary(
+                        result.extended_face,
+                        bf.face,
+                        list(outer_edges),
+                        face_normal,
+                        interior_faces=non_boundary_faces,
+                    )
+
+                    orig_area = result.extended_face.Area
+                    trim_area = trimmed.Area if hasattr(trimmed, "Area") else 0.0
+                    print(f"[trim-outside] face {bf.index}: {orig_area:.2f} → {trim_area:.2f} mm²")
+
+                    # Decide which to keep: the trimmed result if the trim did
+                    # something meaningful, otherwise the untrimmed extension.
+                    # A "meaningful" reduction is anything more than 1 mm².
+                    if abs(orig_area - trim_area) < 1.0:
+                        # Trim didn't reduce anything — keep the untrimmed extension
+                        # and flag it in the report.
+                        report.extended_faces.append(bf.face)
+                        report.extended_faces.append(result.extended_face)
+                        report.deferred_faces.append(bf.index)
+                        print(f"[batch] face {bf.index}: kept original + untrimmed "
+                            f"extension (trim had no effect)")
                     else:
-                        extended_shape = Part.makeCompound(trim_result.trimmed_faces)
-                        extended_count = len(trim_result.trimmed_faces)
+                        # Trim worked — keep the trimmed band + the original face
+                        report.extended_faces.append(bf.face)
+                        report.extended_faces.append(trimmed)
 
-                    combined = Part.makeCompound([extended_shape] + valid_interior)
-                    extended_join.sewed_shell = combined
-                    extended_join.open_edge_count = 0
-                    extended_join.input_face_count = extended_count + len(valid_interior)
-                    extended_join.method_used = "compound"
-                    extended_join.status = JoinStatus.SUCCESS
-                except Exception as exc:
-                    print(f"[batch] compound failed: {exc}")
+                elif result.status == ExtrapolationStatus.DEFERRED:
+                    report.extended_faces.append(bf.face)
+                    report.deferred_faces.append(bf.index)
+    
+            # Join the extended faces into a shell
+            if report.extended_faces and strategy == "per_face":
+                cfg = load_config()
+                trim_result = TrimResult(
+                    status=TrimStatus.NO_OVERLAP,
+                    input_face_count=len(report.extended_faces),
+                    trimmed_faces=list(report.extended_faces),
+                    trimmed_face_count=len(report.extended_faces),
+                )
+                print(f"[batch] {trim_result.short()}")
+                report.trim_result = trim_result
 
-            report.join_result = extended_join
+                extended_join = join_faces(
+                    trim_result.trimmed_faces,
+                    tolerance_mm=cfg.join.sewing_tolerance_mm,
+                    refine=cfg.join.refine_shape,
+                )
 
-            # Save the FCStd if a path was given
-            if output_fcstd is not None:
-                try:
-                    from surface_assistant.io import save_extended_faces
-                    save_extended_faces(report, Path(output_fcstd))
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[batch] FCStd save failed: {exc}")
+                if non_boundary_faces:
+                    valid_interior = [f for f in non_boundary_faces if _is_valid_face(f)]
+                    filtered = len(non_boundary_faces) - len(valid_interior)
+                    if filtered > 0:
+                        print(f"[batch] filtered {filtered} degenerate faces")
 
-            # AI diagnosis on failure
-            if use_llm:
-                # Case 1: join failed
-                if report.join_result.status != JoinStatus.SUCCESS:
-                    from surface_assistant.llm import diagnose
-                    png_path = _try_render_png(output_fcstd)
-                    report.llm_diagnosis = diagnose(
-                        report.join_result,
-                        report.results,
-                        image_path=png_path,
-                    )
+                    try:
+                        if extended_join.sewed_shell is not None:
+                            extended_shape = extended_join.sewed_shell
+                            extended_count = len(trim_result.trimmed_faces)
+                        else:
+                            extended_shape = Part.makeCompound(trim_result.trimmed_faces)
+                            extended_count = len(trim_result.trimmed_faces)
 
-                # Case 2: some faces were deferred (trim had no effect)
-                elif report.deferred_faces:
-                    from surface_assistant.llm import diagnose_deferred_faces
-                    png_path = _try_render_png(output_fcstd)
-                    report.llm_diagnosis = diagnose_deferred_faces(
-                        report.deferred_faces,
-                        report.results,
-                        image_path=png_path,
-                    )
+                        combined = Part.makeCompound([extended_shape] + valid_interior)
+                        extended_join.sewed_shell = combined
+                        extended_join.open_edge_count = 0
+                        extended_join.input_face_count = extended_count + len(valid_interior)
+                        extended_join.method_used = "compound"
+                        extended_join.status = JoinStatus.SUCCESS
+                    except Exception as exc:
+                        print(f"[batch] compound failed: {exc}")
+
+                report.join_result = extended_join
+
+        # --- Common tail: save + AI diagnosis (runs for BOTH strategies) ---
+        if output_fcstd is not None:
+            try:
+                from surface_assistant.io import save_extended_faces
+                save_extended_faces(report, Path(output_fcstd))
+            except Exception as exc:
+                print(f"[batch] FCStd save failed: {exc}")
+
+        if use_llm and report.join_result is not None:
+            if report.join_result.status != JoinStatus.SUCCESS:
+                from surface_assistant.llm import diagnose
+                png_path = _try_render_png(output_fcstd)
+                report.llm_diagnosis = diagnose(
+                    report.join_result,
+                    report.results,
+                    image_path=png_path,
+                )
+            elif report.deferred_faces:
+                from surface_assistant.llm import diagnose_deferred_faces
+                png_path = _try_render_png(output_fcstd)
+                report.llm_diagnosis = diagnose_deferred_faces(
+                    report.deferred_faces,
+                    report.results,
+                    image_path=png_path,
+                )
 
         return report
 

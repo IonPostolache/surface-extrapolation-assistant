@@ -62,6 +62,11 @@ def run(
         None, "--tolerance", "-t",
         help="Tolerance as a percentage (default: config.yaml)",
     ),
+    strategy: str = typer.Option(
+        "per_face",
+        "--strategy",
+        help="Extension strategy: 'per_face' (default) or 'whole_surface'",
+    ),
     output: Path = typer.Option(
         None, "--output", "-o",
         help="Save extended faces to this .FCStd file",
@@ -98,6 +103,7 @@ def run(
         max_correction_passes=cfg.extrapolation.max_correction_passes,
         use_llm=llm,
         output_fcstd=output,
+        strategy=strategy,
     )
     console.print(report.summary())
 
@@ -109,6 +115,11 @@ def run_folder(
     folder: Path = typer.Argument(..., help="Folder containing surface.stp file"),
     distance: float = typer.Option(None, "--distance", "-d"),
     tolerance: float = typer.Option(None, "--tolerance", "-t"),
+    strategy: str = typer.Option(
+        "per_face",
+        "--strategy",
+        help="Extension strategy: 'per_face' (default) or 'whole_surface'",
+    ),
     output: Path = typer.Option(None, "--output", "-o"),
     llm: bool = typer.Option(False, "--ai"),
     screenshots: bool = typer.Option(
@@ -120,7 +131,7 @@ def run_folder(
         help="Comma-separated screenshot views: iso,front,top,left",
     ),
 ) -> None:
-    """Run the pipeline on a folder. Auto-detects surface vs boundary."""
+    """Run the pipeline on a folder. Auto-detects surface."""
     from surface_assistant.step_io import resolve_inputs
     from surface_assistant.batch import run_batch
     from surface_assistant.io import save_extended_faces
@@ -139,7 +150,8 @@ def run_folder(
         tolerance_percent=tol_percent,
         max_correction_passes=cfg.extrapolation.max_correction_passes,
         use_llm=llm,
-        output_fcstd=output
+        output_fcstd=output,
+        strategy=strategy
     )
     console.print(report.summary())
 

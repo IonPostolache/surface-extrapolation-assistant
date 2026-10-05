@@ -243,3 +243,283 @@ def extrapolate_face(
         achieved_mm=distance_mm,
         extended_face=extended,
     )
+
+def extrapolate_surface_as_whole(
+    outer_boundary_wire: Part.Wire,
+    surface_shape: Part.Shape,
+    distance_mm: float,
+    samples: int = 20,
+) -> Part.Shape | None:
+    """Extend the entire surface along its outer boundary.
+
+    Builds one ribbon per boundary edge and returns them as a single
+    compound. Unlike the earlier version, this does not try to
+    interpolate a single closed offset curve — it processes each edge
+    independently, so multi-loop boundaries and concave regions are
+    handled naturally.
+
+    Returns a compound of ribbons, or None on total failure.
+    """
+    if distance_mm <= 0:
+        return None
+
+    # edge_list = _order_edges_into_chain(list(outer_boundary_wire.Edges))
+    edge_list = list(outer_boundary_wire.Edges)
+    if not edge_list:
+        return None
+
+    ribbons = []
+    built = 0
+
+    for edge in edge_list:
+        ribbon = _build_ribbon_for_edge(
+            surface_shape, edge, distance_mm, samples
+        )
+        if ribbon is not None:
+            ribbons.append(ribbon)
+            built += 1
+
+    if not ribbons:
+        print("[whole_surface] no ribbons could be built")
+        return None
+
+    print(f"[whole_surface] built {built}/{len(edge_list)} ribbons")
+
+    try:
+        return Part.makeCompound(ribbons)
+    except Exception as exc:
+        print(f"[whole_surface] compound failed: {exc}")
+        return None
+
+def _build_ribbon_for_edge(
+    surface_shape: Part.Shape,
+    edge: Part.Edge,
+    distance_mm: float,
+    samples: int = 20,
+) -> Part.Face | None:
+    """Build a single curvature-following ribbon along one boundary edge.
+
+    Samples the edge, offsets each sample outward in the surface's
+    tangent plane, interpolates a BSpline through the offset points,
+    and lofts between the original edge and the offset curve.
+    """
+    try:
+        t_min = edge.FirstParameter
+        t_max = edge.LastParameter
+    except Exception:
+        return None
+
+    if t_max <= t_min:
+        return None
+
+    # Use only 3 samples: start, middle, end
+    n = 3
+    original_pts = []
+    offset_pts = []
+
+    for i in range(n + 1):
+        t = t_min + (t_max - t_min) * i / n
+        try:
+            p = edge.valueAt(t)
+            tangent = edge.tangentAt(t)
+        except Exception:
+            continue
+
+        outward = _outward_at_boundary_point(surface_shape, p, tangent)
+        if outward is None:
+            continue
+
+        original_pts.append(p)
+        offset_pts.append(p + outward * distance_mm)
+
+    if len(original_pts) < 2 or len(offset_pts) < 2:
+        return None
+   
+    # Build the original curve as a wire
+    try:
+        original_wire = Part.Wire([edge])
+    except Exception:
+        return None
+
+    # Build the offset curve as a BSpline
+    try:
+        offset_curve = Part.BSplineCurve()
+        offset_curve.interpolate(offset_pts)
+        offset_edge = offset_curve.toShape()
+        offset_wire = Part.Wire([offset_edge])
+    except Exception:
+        return None
+
+    # Loft between the two wires
+    try:
+        loft = Part.makeLoft([original_wire, offset_wire], False, False)
+    except Exception:
+        return None
+
+    if not loft.Faces:
+        return None
+
+    # Return the largest face of the loft
+    try:
+        return max(loft.Faces, key=lambda f: f.Area)
+    except Exception:
+        return loft.Faces[0]
+
+
+def _outward_at_boundary_point(shape, point, tangent):
+    """Compute outward direction at a boundary point using the surface's
+    local tangent frame."""
+    best_face = None
+    best_normal = None
+    best_score = float("inf")
+
+    for face in shape.Faces:
+        # Quick reject: point outside the face's bounding box + margin
+        try:
+            bb = face.BoundBox
+            margin = 5.0
+            if not (
+                bb.XMin - margin <= point.x <= bb.XMax + margin and
+                bb.YMin - margin <= point.y <= bb.YMax + margin and
+                bb.ZMin - margin <= point.z <= bb.ZMax + margin
+            ):
+                continue
+        except Exception:
+            pass
+
+        try:
+            u, v = face.Surface.parameter(point)
+            surface_pt = face.valueAt(u, v)
+            distance = (surface_pt - point).Length
+
+            # Loosen: STEP-imported surfaces rarely reproduce a boundary
+            # point exactly. Accept anything within 100 mm — the nearest
+            # face will win by the score below.
+            if distance > 100.0:
+                continue
+
+            normal = face.Surface.normal(u, v)
+
+            # Perpendicularity check — but with the correct API.
+            tangent_n = FreeCAD.Vector(tangent.x, tangent.y, tangent.z)
+            tangent_n.normalize()
+            normal_n = FreeCAD.Vector(normal.x, normal.y, normal.z)
+            normal_n.normalize()
+            perp_score = abs(tangent_n.dot(normal_n))
+
+            score = distance + perp_score * 10.0
+            if score < best_score:
+                best_score = score
+                best_face = face
+                best_normal = normal
+        except Exception as exc:
+            # Optional: print(f"[whole_surface] face skipped: {exc}")
+            continue
+
+    if best_normal is None:
+        return None
+
+
+    # We already found the face this point is on. Use it to decide direction.
+    # (The point was on `best_face`'s surface; `best_normal` was its normal.)
+    perp = tangent.cross(best_normal)
+    if perp.Length < 1e-9:
+        return None
+    perp.normalize()
+
+    # Sanity: perp should point AWAY from the face's local interior.
+    # Use the face's own center as the interior reference.
+    try:
+        face_center = best_face.CenterOfMass
+        if (point - face_center).dot(perp) < 0:
+            perp = -perp
+    except Exception:
+        pass
+
+    return perp
+
+
+def _point_inside_shape(shape, point, tolerance=1e-3):
+    """Return True if `point` is inside any face of `shape` (projected)."""
+    for face in shape.Faces:
+        try:
+            if face.isInside(point, tolerance, True):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _smooth_points(points, window=3):
+    """Apply a simple moving-average filter to a list of FreeCAD points."""
+    if len(points) < window * 2:
+        return points
+    smoothed = []
+    for i in range(len(points)):
+        x = y = z = 0.0
+        count = 0
+        for j in range(max(0, i - window), min(len(points), i + window + 1)):
+            x += points[j].x
+            y += points[j].y
+            z += points[j].z
+            count += 1
+        smoothed.append(FreeCAD.Vector(x / count, y / count, z / count))
+    return smoothed
+
+
+def _order_edges_into_chain(edges, tolerance=1e-3):
+    """Return the edges ordered so each one's start matches the previous
+    edge's end, forming a continuous chain. If the input edges form a
+    closed loop, the last edge's end matches the first edge's start."""
+    if not edges:
+        return []
+
+    remaining = list(edges)
+    ordered = [remaining.pop(0)]
+
+    while remaining:
+        try:
+            end = ordered[-1].Vertexes[-1].Point
+        except Exception:
+            break
+
+        found = False
+        for i, e in enumerate(remaining):
+            try:
+                v0 = e.Vertexes[0].Point
+                v1 = e.Vertexes[-1].Point
+            except Exception:
+                continue
+
+            # Forward match
+            if (v0 - end).Length < tolerance:
+                ordered.append(e)
+                remaining.pop(i)
+                found = True
+                break
+
+            # Reverse match — flip the edge
+            if (v1 - end).Length < tolerance:
+                try:
+                    if type(e.Curve).__name__ == "Line":
+                        e_flipped = Part.LineSegment(v1, v0).toShape()
+                    else:
+                        e_flipped = Part.Edge(
+                            e.Curve, e.LastParameter, e.FirstParameter
+                        )
+                    ordered.append(e_flipped)
+                    remaining.pop(i)
+                    found = True
+                    break
+                except Exception:
+                    # Can't flip — add a straight connector and continue
+                    ordered.append(e)
+                    remaining.pop(i)
+                    found = True
+                    break
+
+        if not found:
+            # Disconnected — return what we have
+            break
+
+    return ordered

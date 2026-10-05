@@ -225,11 +225,12 @@ This is a binary compatibility issue: the C symbol signature changed between
 
 Use FreeCAD's own bundled Python to create the venv:
 
-bash
+```bash
 cd /path/to/surface-extrapolation-assistant
 rm -rf .venv
 ~/.FreeCAD/squashfs-root/usr/bin/python -m venv .venv
 source .venv/bin/activate
+```
 
 # Should print 3.11.x
 python --version
@@ -242,10 +243,11 @@ freecad:
 Or set the FREECAD_LIB_PATH environment variable.
 
 4. Install the project
-bash
+```bash
 pip install -e ".[dev]"
+```
 5. Verify the setup
-bash
+```bash
 python -c "
 from surface_assistant import freecad_setup
 import FreeCAD, Part
@@ -253,6 +255,7 @@ box = Part.makeBox(10, 10, 10)
 print('FreeCAD version:', FreeCAD.Version()[0], FreeCAD.Version()[1])
 print('Faces:', len(box.Faces))
 "
+```
 Expected:
 
 text
@@ -270,28 +273,38 @@ LLM_TIMEOUT=120
 LLM_TEMPERATURE=0.2
 Usage
 Inspect a surface
-bash
+```bash
 surface-assistant inspect model.step
+```
+
 Run the pipeline on a folder
 The folder must contain exactly one STEP file. Filenames do not need to
 follow a naming pattern:
 
-bash
+```bash
 surface-assistant run-folder examples/test3 \
   --ai -o examples/test3/extended.FCStd \
   --screenshots --views iso,front,top,left
+```
 The PNGs are written beside the FCStd output as extended_iso.png,
 extended_front.png, etc. Use --views front for a single screenshot named
 extended.png. Screenshot generation is opt-in and requires --output.
 
+
+# Whole-surface
+```bash
+surface-assistant run-folder examples/test3 --strategy whole_surface --ai -o examples/test3/whole_surface.FCStd
+```
+
+
 Run with an explicit file
-bash
+```bash
 surface-assistant run model.step \
   --distance 5 \
   --tolerance 2.0 \
   --ai \
   -o output.FCStd
-
+```
   
 Why this project
 Demonstrates a constrained, auditable approach to AI-assisted CAD automation:
