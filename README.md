@@ -283,18 +283,18 @@ surface-assistant inspect model.step
 The folder must contain exactly one STEP file. Filenames do not need tofollow a naming pattern:
 
 ```bash
-surface-assistant run examples/test3 --strategy per_face --ai -o examples/test3/per_face.FCStd
+surface-assistant run examples/test3 --strategy per_face --ai
 
 ```
 
-When `--output` is given, the pipeline always produces two files:
+The pipeline always produces two files:
 - `<name>.FCStd` — openable in FreeCAD.
 - `<name>_grid.png` — a labeled 6-view grid (ISO, FRONT, TOP, LEFT, BACK, BOTTOM) combined into one image.
 
 
 # Whole-surface
 ```bash
-surface-assistant run examples/test3 --strategy whole_surface --ai -o examples/test3/whole_surface.FCStd
+surface-assistant run examples/test3 --strategy whole_surface --ai
 
 ```
 

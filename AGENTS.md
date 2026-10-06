@@ -47,7 +47,7 @@ CAD before running.
 ## CLI usage
 ```bash
 # Folder with exactly one STEP file
-surface-assistant run examples/test3 --distance 5 -o out.FCStd
+surface-assistant run examples/test3 --strategy per_face --ai
 
 # Inspect a surface without extending
 surface-assistant inspect model.step
@@ -58,8 +58,6 @@ Flags:
 - `--strategy` — `per_face` (default) or `whole_surface`
 - `--ai` — enable local-LLM diagnostics on failure or DEFERRED faces
 - `--ai-verbose` — print the raw AI response
-- `--output` / `-o` — save the result to `.FCStd`; also renders
-  `<name>_grid.png` beside it
 
 
 ## Local LLM (optional)
@@ -113,12 +111,10 @@ cli.py — typer CLI
 
 ## Output
 
-When `--output` / `-o` is given, the pipeline produces:
+The pipeline produces:
 - `<name>.FCStd` — openable in FreeCAD.
 - `<name>_grid.png` — a 6-view grid (ISO, FRONT, TOP, LEFT, BACK,
   BOTTOM) in a single image.
-
-There is no `--screenshots` flag. The grid is always rendered.
 
 
 ## Known limitations to keep in mind

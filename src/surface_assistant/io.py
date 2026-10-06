@@ -18,15 +18,12 @@ import Part  # type: ignore
 def save_extended_faces(report, output_path: Path) -> Path:
     """Save extended faces from a BatchReport to a .FCStd file.
 
-    Always writes:
-        - One Extended_i object per extended face (or one for the whole
+    Writes:
+        - One Extended_i per extended face (or one for the whole
           ribbon compound, depending on strategy).
         - One JoinedShell containing extension + original + interior.
-        - One OriginalSurface with the original input geometry (separate
-          so the user can color it and compare).
-
-    The presence of OriginalSurface does not affect the JoinedShell
-    compound; it is a display-only helper.
+        - One OriginalSurface with the original input geometry, for
+          colour-comparison workflows.
     """
     output_path = Path(output_path)
     doc = FreeCAD.newDocument("_SavedOutput")
@@ -39,7 +36,7 @@ def save_extended_faces(report, output_path: Path) -> Path:
         joined = doc.addObject("Part::Feature", "JoinedShell")
         joined.Shape = report.join_result.sewed_shell
 
-    # NEW: separate original surface for color-comparison workflows
+    # NEW — separate original surface for colour comparison
     if getattr(report, "original_shape", None) is not None:
         original = doc.addObject("Part::Feature", "OriginalSurface")
         original.Shape = report.original_shape

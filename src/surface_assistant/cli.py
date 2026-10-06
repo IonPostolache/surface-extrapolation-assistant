@@ -51,24 +51,28 @@ def inspect(step_file: Path = typer.Argument(..., help="Surface STEP file")) -> 
     console.print(table)
 
 
-@app.command()
+@app.command(name="run")
 def run(
-    folder: Path = typer.Argument(..., help="Folder containing exactly one STEP file"),
+    folder: Path = typer.Argument(
+        ..., help="Folder containing exactly one STEP file"
+    ),
     distance: float = typer.Option(None, "--distance", "-d"),
     tolerance: float = typer.Option(None, "--tolerance", "-t"),
     strategy: str = typer.Option(
         "per_face",
         "--strategy",
-        help="Extension strategy: 'per_face' or 'whole_surface'",
+        help="Extension strategy: 'per_face' (default) or 'whole_surface'",
     ),
-    output: Path = typer.Option(None, "--output", "-o"),
     llm: bool = typer.Option(False, "--ai"),
-    llm_verbose: bool = typer.Option(False, "--ai-verbose"),
+    ai_verbose: bool = typer.Option(False, "--ai-verbose"),
 ) -> None:
-    """Run the pipeline on a folder containing exactly one STEP file."""
+    """Run the pipeline on a folder containing exactly one STEP file.
+
+    The result is written next to the input STEP
+    file as <folder>/<strategy>.FCStd, with a companion <strategy>_grid.png.
+    """
     from surface_assistant.step_io import resolve_inputs
     from surface_assistant.batch import run_batch
-    from surface_assistant.io import save_extended_faces
 
     surface_path = resolve_inputs(folder)
     console.print(f"[cyan]Surface :[/cyan]  {surface_path.name}")
@@ -77,6 +81,8 @@ def run(
     target_mm = distance if distance is not None else cfg.extrapolation.target_distance_mm
     tol_percent = tolerance if tolerance is not None else cfg.extrapolation.tolerance_percent
 
+    output = folder / f"{strategy}.FCStd"
+
     console.rule("[bold]Batch extrapolation")
     report = run_batch(
         step_file=surface_path,
@@ -84,14 +90,16 @@ def run(
         tolerance_percent=tol_percent,
         max_correction_passes=cfg.extrapolation.max_correction_passes,
         use_llm=llm,
-        ai_verbose=llm_verbose,
         output_fcstd=output,
-        strategy=strategy
+        strategy=strategy,
+        ai_verbose=ai_verbose,
     )
     console.print(report.summary())
 
-    if output is not None:
-        console.print(f"[green]Saved to[/green] {output}")
+    grid_path = output.with_name(output.stem + "_grid.png")
+    console.print(f"[green]Saved to[/green] {output}")
+    if grid_path.exists():
+        console.print(f"[green]Grid screenshot[/green] {grid_path}")
 
 def main() -> None:
     try:

@@ -456,7 +456,7 @@ def run_batch(
                 report.join_result = extended_join
 
         # --- Common tail: save + AI diagnosis (runs for BOTH strategies) ---
-        # 1. Save the FCStd (unconditional on -o)
+        # 1. Save the FCStd 
         if output_fcstd is not None:
             try:
                 from surface_assistant.io import save_extended_faces
@@ -465,7 +465,7 @@ def run_batch(
             except Exception as exc:
                 print(f"[batch] FCStd save failed: {exc}")
 
-        # 2. Render the grid screenshot (unconditional on -o)
+        # 2. Render the grid screenshot 
         grid_path = None
         if output_fcstd is not None:
             grid_path = _try_render_grid(output_fcstd)
