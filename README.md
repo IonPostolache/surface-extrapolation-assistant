@@ -85,41 +85,41 @@ The **ruled strip** strategy is used on planar faces because the underlying
 surface is already flat, so a flat strip is geometrically correct.
 
 ## Architecture
+
+```text
 STEP surface (single file, no holes)
-|
-v
+        |
+        v
 FreeCAD / Python geometry core
-|
-v
+        |
+        v
 Identify boundary faces and extendable edges
 (topological outer-boundary detection +
 stable geometric fingerprint, not Face-N index)
-|
-v
+        |
+        v
 Per-face extension (ribbon / ruled / parametric)
-|
-v
+        |
+        v
 Trim extension back to outer boundary
-|
-+-----------+-----------+
-| |
-trimmed no effect
-| |
-v v
-keep band + face keep face + extension
-| (mark as DEFERRED)
-| |
-+-----------+-----------+
-|
-v
+        |
+   +----+----+
+   |         |
+trimmed   no effect
+   |         |
+   v         v
+keep band  keep original + untrimmed extension
++ face     (mark as DEFERRED)
+   |         |
+   +----+----+
+        |
+        v
 Join + report open edges
-|
-v
+        |
+        v
 Optional: local-LLM diagnosis
-(on failure, JSON out, allow-listed
-recovery actions only)
-
-text
+(on failure, JSON out, allow-listed recovery actions only)
+```
 
 ## What the LLM does — and does not do
 
@@ -208,14 +208,14 @@ temporary location that disappears when the process exits.
 ```bash
 mkdir -p ~/.FreeCAD
 cd ~/.FreeCAD
-```
 
 # Extract the AppImage (adjust the filename)
 ~/Downloads/FreeCAD_*.AppImage --appimage-extract
+```
 This produces ~/.FreeCAD/squashfs-root/, which contains FreeCAD's binaries,
 libraries, and its bundled Python interpreter.
 
-2. Create the virtual environment with FreeCAD's Python
+### 2. Create the virtual environment with FreeCAD's Python
 FreeCAD 1.1 AppImages are built against Python 3.11. If you create the
 venv with a newer interpreter (3.12+), importing FreeCAD will fail with:
 
@@ -230,23 +230,24 @@ cd /path/to/surface-extrapolation-assistant
 rm -rf .venv
 ~/.FreeCAD/squashfs-root/usr/bin/python -m venv .venv
 source .venv/bin/activate
-```
 
 # Should print 3.11.x
 python --version
-3. Configure the FreeCAD library path
+```
+### 3. Configure the FreeCAD library path
 Edit config.yaml and set the path to FreeCAD's library directory:
 
-yaml
+```yaml
 freecad:
   lib_path: "/home/<you>/.FreeCAD/squashfs-root/usr/lib"
+```
 Or set the FREECAD_LIB_PATH environment variable.
 
-4. Install the project
+### 4. Install the project
 ```bash
 pip install -e ".[dev]"
 ```
-5. Verify the setup
+### 5. Verify the setup
 ```bash
 python -c "
 from surface_assistant import freecad_setup
@@ -258,48 +259,75 @@ print('Faces:', len(box.Faces))
 ```
 Expected:
 
-text
 FreeCAD version: 1 1
 Faces: 6
-6. Optional: Local LLM
-The geometry pipeline runs without an LLM. To enable failure diagnosis via
-LM Studio or Ollama, create a .env file at the project root:
 
-text
-LLM_BASE_URL=http://localhost:1234/v1
-LLM_MODEL=qwen3-coder-30b-a3b-instruct
-LLM_API_KEY=lm-studio
-LLM_TIMEOUT=120
-LLM_TEMPERATURE=0.2
-Usage
-Inspect a surface
+### 6. Optional: Local LLM
+
+The geometry pipeline runs without an LLM. To enable failure diagnosis, set `LLM_API_KEY` in `.env`:
+
+    LLM_API_KEY=lm-studio
+
+Everything else (endpoint, model, timeout, temperature) is read from
+`config.yaml`. Load the model in LM Studio (or Ollama) before running with `--ai`.
+
+
+## Usage
+
+### Inspect a surface
 ```bash
 surface-assistant inspect model.step
 ```
 
-Run the pipeline on a folder
-The folder must contain exactly one STEP file. Filenames do not need to
-follow a naming pattern:
+### Run the pipeline on a folder
+The folder must contain exactly one STEP file. Filenames do not need tofollow a naming pattern:
 
 ```bash
-surface-assistant run-folder examples/test3 --strategy per_face --ai -o examples/test3/per_face.FCStd
+surface-assistant run examples/test3 --strategy per_face --ai -o examples/test3/per_face.FCStd
 
 ```
-The PNGs are written beside the FCStd output as extended_iso.png,
-extended_front.png, etc. Use --views front for a single screenshot named
-extended.png. Screenshot generation is opt-in and requires --output.
+
+When `--output` is given, the pipeline always produces two files:
+- `<name>.FCStd` — openable in FreeCAD.
+- `<name>_grid.png` — a labeled 6-view grid (ISO, FRONT, TOP, LEFT, BACK, BOTTOM) combined into one image.
 
 
 # Whole-surface
 ```bash
-surface-assistant run-folder examples/test3 --strategy whole_surface --ai -o examples/test3/whole_surface.FCStd
+surface-assistant run examples/test3 --strategy whole_surface --ai -o examples/test3/whole_surface.FCStd
 
 ```
 
-Run with an explicit file
-```bash
-surface-assistant run model.step --distance 5 --tolerance 2.0 --ai -o output.FCStd
+
+## Sample output
+
+```text
+Running the pipeline on `examples/test3/Part3v3.stp` with 
+`--strategy per_face --ai`:
+[batch] 47 interior faces identified
+[trim-outside] face 0: 13242.35 → 13242.35 mm²
+[batch] face 0: kept original + untrimmed extension (trim had no effect)
+...
+[batch] TRIM no_overlap faces=16
+Batch report for Part3v3.stp
+...
+JOIN OK via compound faces=63 open_edges=0 (shell is connected)
+
+AI diagnosis:
+image: The image shows a multi-panel view of a mechanical part
+with multiple features, viewed from ISO, front, top, back,
+bottom, and left perspectives.
+The face likely extends to the boundary of the model's outer
+surface, so when extended outward by 10.0 mm, the resulting
+ribbon does not cross into an interior region that can be trimmed.
+confidence: 0.85
+actions: reduce_extension_distance, manual_review
+
+...
+Deferred faces (left unchanged): [0]
+Saved to examples/test3/per_face.FCStd
 ```
+
   
 Why this project
 Demonstrates a constrained, auditable approach to AI-assisted CAD automation:
@@ -311,3 +339,7 @@ passes through deterministic validation before touching the model.
 It also documents, honestly, where FreeCAD's public API hits its limits when
 compared to a commercial kernel like CATIA's — and what a pythonocc-based
 implementation would need to close the remaining gap.
+
+> **Design decisions and abandoned approaches:** see
+> [`docs/design_log.md`](docs/design_log.md) for a full record of what
+> was tried, what failed, and why.

@@ -62,8 +62,8 @@ class JoinConfig:
 class LLMConfig:
     enabled: bool = True
     provider: str = "lmstudio"
-    endpoint: str = "http://localhost:11434"
-    model: str = "qwen2.5-coder:7b"
+    endpoint: str = "http://localhost:1234/v1"
+    model: str = "qwen3-vl-30b-a3b-instruct"
     timeout_seconds: int = 60
     temperature: float = 0.2
 

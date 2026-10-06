@@ -170,8 +170,13 @@ class BatchReport:
         if self.llm_diagnosis is not None:
             lines.append("")
             lines.append("  AI diagnosis:")
+            if self.llm_diagnosis.image_visible is False:
+                lines.append("    [warning] model reported the image was not visible")
+            elif self.llm_diagnosis.image_description:
+                lines.append(f"    image: {self.llm_diagnosis.image_description}")
             lines.append(f"    {self.llm_diagnosis.diagnosis}")
             lines.append(f"    confidence: {self.llm_diagnosis.confidence:.2f}")
+
             if self.llm_diagnosis.recommended_actions:
                 actions = ", ".join(self.llm_diagnosis.recommended_actions)
                 lines.append(f"    actions: {actions}")
@@ -206,8 +211,8 @@ def _try_render_grid(output_fcstd: Path | None) -> Path | None:
         if make_screenshot_grid(
             Path(output_fcstd),
             grid_path,
-            views=("iso", "front", "top", "left", "back", "bottom"),
-        ):
+            views=("iso", "front", "top", "left", "back"),
+        ):         
             return grid_path
     except Exception as exc:
         print(f"[batch] grid render failed: {exc}")

@@ -75,6 +75,8 @@ class LLMDiagnosis:
     recommended_actions: list[str] = field(default_factory=list)
     raw_response: str | None = None
     error_message: str | None = None
+    image_visible: bool | None = None        
+    image_description: str = ""              
 
     def short(self) -> str:
         if self.status != DiagnosisStatus.OK:
@@ -200,8 +202,8 @@ def _build_diagnostic_payload(join_result, extrapolation_results):
             "requested_mm": r.requested_mm,
             "achieved_mm": r.achieved_mm,
             "percent_error": r.achieved_percent_error,
-            "ratio_used": r.ratio_used,             # NEW
-            "ratio_suspicious": (                     # NEW
+            "ratio_used": r.ratio_used,
+            "ratio_suspicious": (         
                 r.ratio_used is not None and r.ratio_used > 1.0
             ),
             "error": r.error_message,
@@ -223,7 +225,7 @@ def _build_diagnostic_payload(join_result, extrapolation_results):
             "input_face_count": join_result.input_face_count,
             "open_edge_count": join_result.open_edge_count,
             "tolerance_used_mm": join_result.tolerance_used_mm,
-            "shell_is_valid": shell_valid,          # NEW — key signal
+            "shell_is_valid": shell_valid,
             "error": join_result.error_message,
         }
 
@@ -263,6 +265,10 @@ def _parse_response(raw: str) -> tuple[str, float, list[str]]:
 
     data = json.loads(text)
 
+    # Optional fields — log them if present, don't require them for the return value
+    image_visible = data.get("image_visible")
+    image_description = data.get("image_description")
+
     if not isinstance(data, dict):
         raise ValueError("response is not a JSON object")
 
@@ -289,7 +295,7 @@ def _parse_response(raw: str) -> tuple[str, float, list[str]]:
         else:
             print(f"[ai debug] rejected action: {a!r}")
 
-    return diagnosis, confidence, actions
+    return diagnosis, confidence, actions, image_visible, image_description
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +412,7 @@ def diagnose(
         print("========================")
 
     try:
-        diagnosis, confidence, actions = _parse_response(raw)
+        diagnosis, confidence, actions, image_visible, image_description = _parse_response(raw)
     except Exception as exc:  # noqa: BLE001
         return LLMDiagnosis(
             status=DiagnosisStatus.INVALID_RESPONSE,
@@ -420,6 +426,8 @@ def diagnose(
         confidence=confidence,
         recommended_actions=actions,
         raw_response=raw,
+        image_visible=image_visible,
+        image_description=image_description,
     )
 
 def _encode_image_base64(image_path: str | Path) -> str:
@@ -473,17 +481,28 @@ outside band from the interior spill. Typical causes:
     - The face's own boundary already coincides with the outer boundary
       (nothing to trim).
 
+You MUST look at the provided grid image before answering.
+
 Your job:
-    1. Explain, in one or two sentences, the most likely geometric
-       reason each face was deferred.
-    2. Recommend ONE OR MORE actions a human should take to resolve it.
-       You MUST use EXACTLY these strings:
-         - "manual_trim_in_cad"
-         - "fill_holes_and_rerun"
-         - "reduce_extension_distance"
-         - "exclude_face_from_batch"
-         - "manual_review"
-    3. Assign a confidence between 0.0 and 1.0.
+    1. Set "image_visible" to true if you can see the image, false otherwise.
+    2. Write "image_description" — one sentence describing what the image
+       shows: how many panels, and the overall shape of the part (frame?
+       panel? multiple features?).
+    3. Write "diagnosis" — one or two sentences explaining the most
+       likely geometric reason each face was deferred. The diagnosis
+       field must contain ONLY the explanation, NOT the recommended
+       actions.
+    4. Write "recommended_actions" — one or more actions from the
+       allowed list below. The actions go in this field only, never
+       in the diagnosis field.
+    5. Assign "confidence" between 0.0 and 1.0.
+
+Allowed action strings (use them EXACTLY):
+    - "manual_trim_in_cad"
+    - "fill_holes_and_rerun"
+    - "reduce_extension_distance"
+    - "exclude_face_from_batch"
+    - "manual_review"
 
 Respond ONLY with valid JSON matching the schema provided.
 """
@@ -492,12 +511,20 @@ Respond ONLY with valid JSON matching the schema provided.
 DEFERRED_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "diagnosis": {
+        "image_visible": {
+            "type": "boolean",
+            "description": "True if you can actually see the provided grid image.",
+        },
+        "image_description": {
             "type": "string",
             "description": (
-                "One or two sentences explaining why the face(s) could "
-                "not be trimmed."
+                "One sentence describing what the grid image shows: how "
+                "many panels, and the overall shape of the part."
             ),
+        },
+        "diagnosis": {
+            "type": "string",
+            "description": "One or two sentences explaining why the face(s) could not be trimmed."
         },
         "confidence": {
             "type": "number",
@@ -519,7 +546,13 @@ DEFERRED_RESPONSE_SCHEMA = {
             "minItems": 1,
         },
     },
-    "required": ["diagnosis", "confidence", "recommended_actions"],
+    "required": [
+        "image_visible",
+        "image_description",
+        "diagnosis",
+        "confidence",
+        "recommended_actions",
+    ],
     "additionalProperties": False,
 }
 
@@ -656,7 +689,7 @@ def diagnose_deferred_faces(
 
     # Reuse the same parser — the schema shape is identical.
     try:
-        diagnosis, confidence, actions = _parse_response(raw)
+        diagnosis, confidence, actions, image_visible, image_description = _parse_response(raw)
     except Exception as exc:
         return LLMDiagnosis(
             status=DiagnosisStatus.INVALID_RESPONSE,
@@ -670,4 +703,6 @@ def diagnose_deferred_faces(
         confidence=confidence,
         recommended_actions=actions,
         raw_response=raw,
+        image_visible=image_visible,
+        image_description=image_description,
     )

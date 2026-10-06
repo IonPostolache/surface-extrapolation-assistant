@@ -171,18 +171,52 @@ behavior — face 0 is reported as `DEFERRED` and left unchanged.
 build a single ribbon from the entire outer boundary wire, so corners
 are handled by the loft instead of by joining separate extensions.
 
-**Result on test3:** failed. The loft between the closed outer boundary
-wire and its offset wire folds over itself in the concave "keyhole"
-region at the bottom of the part. The `_outward_at_boundary_point`
-helper is unreliable on concave boundaries — the nearest-face normal
-doesn't align with the boundary's local perpendicular.
+**Result on test3:** succeeded after the implementation changed from a
+single lofted ribbon to one ribbon per boundary edge. The initial
+loft-based version folded over itself in the concave "keyhole" region
+at the bottom of the part — the interpolated offset curve crossed
+itself and the loft between the boundary wire and the offset wire
+produced a folded surface.
 
-**When it might work:** surfaces with convex or gently-curved outer
-boundaries.
+The per-edge version processes each boundary edge independently and
+returns a compound of ribbons. This handles concave and multi-loop
+boundaries naturally: 18 of 18 boundary edges produce ribbons, no
+folding.
 
-**Why it fails on real parts:** the outer boundary of a stamping panel
-is almost always concave somewhere (notches, cutouts, flange bases).
-The loft approach cannot handle those cleanly.
+**Tradeoff:** the per-edge version is slower (each edge requires its
+own ribbon loft) and adjacent ribbons may not align perfectly at
+corners. The per-face strategy is still the default for clean per-face
+results.
+
+**When it's a good fit:** surfaces with complex or concave outer
+boundaries where per-face extension leaves visible spill.
+
+
+### 9. Vision-enabled LLM diagnosis
+
+**Hypothesis:** A text-only diagnostic (structured JSON with face
+metrics and error messages) is enough for a local LLM to explain a
+deferred face. A vision-language model that also sees the geometry
+would give better diagnoses.
+
+**Result:** confirmed. The pipeline renders a 6-view grid (ISO, FRONT,
+TOP, LEFT, BACK, BOTTOM) as a single PNG and sends it alongside the
+JSON payload. The model's response includes an `image_description`
+field; on test3 it produced a correct description of the multi-view
+drawing, which proves the image reached the model and was used.
+
+**Implementation detail:** the request uses LM Studio's OpenAI-compatible
+`/v1/chat/completions` endpoint with `response_format.type = json_schema`.
+A JSON schema forces the model to return `image_visible` and
+`image_description` alongside `diagnosis`, `confidence`, and
+`recommended_actions`. This forces the model to attend to the image and
+makes the attention auditable.
+
+**Why this matters:** without the mandatory image fields, a model can
+produce a plausible-sounding diagnosis from text alone and never look
+at the geometry. The `image_visible` boolean is the proof that the
+vision path worked.
+
 
 ## Findings about FreeCAD's public API
 

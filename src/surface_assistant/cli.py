@@ -53,67 +53,7 @@ def inspect(step_file: Path = typer.Argument(..., help="Surface STEP file")) -> 
 
 @app.command()
 def run(
-    step_file: Path = typer.Argument(..., help="Surface STEP file"),
-    distance: float = typer.Option(
-        None, "--distance", "-d",
-        help="Target extrapolation distance in mm (default: config.yaml)",
-    ),
-    tolerance: float = typer.Option(
-        None, "--tolerance", "-t",
-        help="Tolerance as a percentage (default: config.yaml)",
-    ),
-    strategy: str = typer.Option(
-        "per_face",
-        "--strategy",
-        help="Extension strategy: 'per_face' (default) or 'whole_surface'",
-    ),
-    output: Path = typer.Option(
-        None, "--output", "-o",
-        help="Save extended faces to this .FCStd file",
-    ),
-    llm: bool = typer.Option(
-        False, "--ai",
-        help="Use local AI for failure diagnostics",
-    ),
-    llm_verbose: bool = typer.Option(
-        False, "--ai-verbose",
-        help="Print the raw AI response",
-    ),
-) -> None:
-    """Batch-extrapolate all boundary faces of a surface."""
-    from surface_assistant.batch import run_batch
-    from surface_assistant.io import save_extended_faces
-
-    cfg = load_config()
-
-    # Resolve: CLI value > config value
-    target_mm = distance if distance is not None else cfg.extrapolation.target_distance_mm
-    tol_percent = tolerance if tolerance is not None else cfg.extrapolation.tolerance_percent
-
-    console.rule("[bold]Batch extrapolation")
-    console.print(f"  Target distance : {target_mm} mm (from "
-                  f"{'CLI' if distance is not None else 'config.yaml'})")
-    console.print(f"  Tolerance       : {tol_percent}% (from "
-                  f"{'CLI' if tolerance is not None else 'config.yaml'})")
-
-    report = run_batch(
-        step_file=step_file,
-        target_mm=target_mm,
-        tolerance_percent=tol_percent,
-        max_correction_passes=cfg.extrapolation.max_correction_passes,
-        use_llm=llm,
-        ai_verbose=llm_verbose,
-        output_fcstd=output,
-        strategy=strategy,
-    )
-    console.print(report.summary())
-
-    if output is not None:
-        console.print(f"[green]Saved to[/green] {output}")
-
-@app.command()
-def run_folder(
-    folder: Path = typer.Argument(..., help="Folder containing surface.stp file"),
+    folder: Path = typer.Argument(..., help="Folder containing exactly one STEP file"),
     distance: float = typer.Option(None, "--distance", "-d"),
     tolerance: float = typer.Option(None, "--tolerance", "-t"),
     strategy: str = typer.Option(
@@ -125,7 +65,7 @@ def run_folder(
     llm: bool = typer.Option(False, "--ai"),
     llm_verbose: bool = typer.Option(False, "--ai-verbose"),
 ) -> None:
-    """Run the pipeline on a folder. Auto-detects surface."""
+    """Run the pipeline on a folder containing exactly one STEP file."""
     from surface_assistant.step_io import resolve_inputs
     from surface_assistant.batch import run_batch
     from surface_assistant.io import save_extended_faces

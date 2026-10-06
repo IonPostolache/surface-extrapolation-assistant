@@ -389,27 +389,28 @@ def _piece_outside_score(piece, boundary_edges, plane_normal, boundary_center):
 def make_screenshot_grid(
     fcstd_path: Path,
     output_png: Path,
-    views: tuple[str, ...] = ("iso", "front", "top", "left", "back", "bottom"),
+    views: tuple[str, ...] = ("iso", "front", "top", "left", "back"),
     cell_size: int = 512,
 ) -> Path | None:
     """Render multiple views and stitch them into a single grid PNG.
 
     Layout:
-        6 views  → 3 columns × 2 rows
-        4 views  → 2 × 2
-        2 views  → 2 × 1
-        1 view   → single image
+        - 6 views  → 3 columns × 2 rows
+        - 4 views  → 2 × 2
+        - 2 views  → 2 × 1
+        - 1 view   → single image
 
     Each cell is labeled with the view name in the corner.
     """
     try:
         from PIL import Image, ImageDraw
     except ImportError:
-        print("[io] Pillow not installed; skipping grid render")
+        print("[io] PIL (Pillow) not available; cannot build grid")
         return None
 
     # Render each view to a temporary PNG
     temp_png = output_png.with_suffix(".tmp.png")
+    from surface_assistant.io import render_fcstd_to_png_subprocess
     if not render_fcstd_to_png_subprocess(
         fcstd_path, temp_png, size=cell_size, views=views
     ):
@@ -461,7 +462,7 @@ def make_screenshot_grid(
         y = r * cell_h
         canvas.paste(img, (x, y))
         # Label the cell
-        draw.text((x + 12, y + 12), view_name.upper(), fill="black")
+        draw.text((x + 10, y + 10), view_name.upper(), fill="black")
 
     canvas.save(output_png, "PNG")
 

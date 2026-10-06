@@ -7,6 +7,8 @@ import argparse
 import importlib
 import sys
 from pathlib import Path
+import time
+from PIL import Image
 
 # isort: off
 from surface_assistant import freecad_setup  # noqa: F401
@@ -22,7 +24,6 @@ VIEW_METHODS = {
     "top": "viewTop",
     "left": "viewLeft",
     "back": "viewRear",
-    "bottom": "viewBottom",
 }
 
 
@@ -73,7 +74,10 @@ def make_snapshot(input_file, output_file, size=1024, views=("iso",)):
         for view_name in views:
             getattr(view, VIEW_METHODS[view_name])()
             view.fitAll()
+            # Give Qt a chance to complete the render before saving
             app.processEvents()
+            time.sleep(0.1)  # 100 ms
+            app.processEvents()  # twice — occasionally one isn't enough
             if len(views) == 1:
                 view_path = output_file
             else:
@@ -81,6 +85,27 @@ def make_snapshot(input_file, output_file, size=1024, views=("iso",)):
                     f"{output_file.stem}_{view_name}{output_file.suffix}"
                 )
             view.saveImage(str(view_path), size, size, "White")
+
+            # Sanity check: is the image blank?
+            try:
+                img = Image.open(view_path)
+                colors = img.getcolors(maxcolors=200000)
+                non_white = sum(c for c, rgb in colors if rgb != (255, 255, 255))
+                if non_white < 100:  # virtually blank
+                    # Retry once
+                    view.fitAll()
+                    app.processEvents()
+                    time.sleep(0.1)
+                    app.processEvents()
+                    view.saveImage(str(view_path), size, size, "White")
+            except Exception:
+                pass
+
+            # Reset to a known state between views
+            view.viewAxonometric()
+            view.fitAll()
+            app.processEvents()
+
     finally:
         FreeCAD.closeDocument(doc.Name)
 
@@ -95,7 +120,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--views",
         default="iso",
-        help="Comma-separated views: iso, front, top, left",
+        help="Comma-separated views: iso, front, top, left, back",
     )
     args = parser.parse_args()
     make_snapshot(
