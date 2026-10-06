@@ -38,7 +38,7 @@ from surface_assistant.io import trim_face_to_outside_boundary
 from surface_assistant.topology import (
     BoundaryFace,
     get_boundary_faces_no_curve,
-    get_outer_boundary_edges,
+    get_outer_perimeter_loop,
     get_extendable_edges_for_face,
     get_neighbor_faces
 )
@@ -271,7 +271,10 @@ def run_batch(
         doc_surface, shape = load_step(step_file, doc_name=doc_name)
         report.original_shape = shape
 
-        outer_edges = get_outer_boundary_edges(shape)
+        # Use the outermost loop only (largest bounding box). Hole
+        # boundaries are ignored.
+        outer_loop = get_outer_perimeter_loop(shape)
+        outer_edges = list(outer_loop.Edges) if outer_loop is not None else []
 
         if strategy == "whole_surface":
             # --- Whole-surface strategy ---

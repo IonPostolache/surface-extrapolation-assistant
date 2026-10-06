@@ -375,7 +375,9 @@ def get_outer_boundary_edges(shape: Part.Shape, tolerance: float = 1e-3) -> list
         if shared_count == 0:
             # Edge appears in only one face's edge list → outer boundary
             boundary_edges.append(edge_a)
-    return boundary_edges
+
+    edges = [e for e in boundary_edges if e.Length > tolerance]
+    return edges
 
 
 def get_extendable_edges_for_face(
@@ -429,3 +431,97 @@ def get_neighbor_faces(
                 continue
             break
     return neighbors
+
+
+def get_boundary_loops(shape, tolerance=1e-3):
+    """Return the outer boundary as a list of connected loops.
+
+    Uses a vertex-adjacency graph. Each boundary edge contributes two
+    endpoints. Loops are traced by walking the graph, preferring the
+    edge that best continues the current direction.
+    """
+    boundary_edges = get_outer_boundary_edges(shape, tolerance)
+    if not boundary_edges:
+        return []
+
+    # Round vertex coordinates to a grid to merge near-coincident vertices
+    def key(point):
+        return (
+            round(point.x / tolerance),
+            round(point.y / tolerance),
+            round(point.z / tolerance),
+        )
+
+    # Build adjacency: vertex_key -> list of (edge, other_vertex_key)
+    adjacency: dict[tuple, list[tuple]] = {}
+    for e in boundary_edges:
+        try:
+            v0 = e.Vertexes[0].Point
+            v1 = e.Vertexes[-1].Point
+        except Exception:
+            continue
+        k0 = key(v0)
+        k1 = key(v1)
+        adjacency.setdefault(k0, []).append((e, k1))
+        adjacency.setdefault(k1, []).append((e, k0))
+
+    used: set = set()
+    loops: list[Part.Wire] = []
+
+    for start_key, incident in adjacency.items():
+        if not incident:
+            continue
+        # Find an unused edge to start a new loop
+        start_edge = None
+        for e, other in incident:
+            if id(e) not in used:
+                start_edge = (e, other)
+                break
+        if start_edge is None:
+            continue
+
+        chain = []
+        current_edge, next_key = start_edge
+        current_key = start_key
+
+        while current_edge is not None and id(current_edge) not in used:
+            used.add(id(current_edge))
+            chain.append(current_edge)
+
+            # Find the next unused edge at next_key (excluding the one we just used)
+            candidates = [
+                (e, other) for (e, other) in adjacency.get(next_key, [])
+                if id(e) not in used
+            ]
+            if not candidates:
+                # Close the loop if we're back at start
+                break
+
+            # Greedy: pick the first unused candidate
+            current_edge, next_key = candidates[0]
+            current_key = next_key
+
+        if chain:
+            try:
+                loops.append(Part.Wire(chain))
+            except Exception:
+                pass
+
+    return loops
+
+
+def get_outer_perimeter_loop(shape, tolerance=1e-3):
+    """Return the boundary loop with the largest bounding box.
+
+    For a surface with holes, this is the outer perimeter (the holes
+    have smaller bounding boxes because they are enclosed by the
+    outer perimeter). For a surface with multiple disconnected outer
+    contours, this returns the largest one.
+    """
+    loops = get_boundary_loops(shape, tolerance)
+    if not loops:
+        return None
+    if len(loops) > 1:
+        print(f"[topology] {len(loops)} boundary loops found "
+              f"(sizes: {[round(w.Length, 2) for w in loops]})")
+    return max(loops, key=lambda w: w.BoundBox.XLength * w.BoundBox.YLength * w.BoundBox.ZLength)

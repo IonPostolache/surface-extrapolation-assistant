@@ -67,7 +67,7 @@ prof/
 # Model / large test files (optional — uncomment if needed)
 *.step
 *.stp
-# examples/*.FCStd
+*.CATPart
 *.png
 *.txt
 

@@ -62,7 +62,6 @@ ALLOWED_ACTIONS = {
     "manual_review",
     # Deferred-face actions:
     "manual_trim_in_cad",
-    "fill_holes_and_rerun",
     "exclude_face_from_batch",
 }
 
@@ -499,7 +498,6 @@ Your job:
 
 Allowed action strings (use them EXACTLY):
     - "manual_trim_in_cad"
-    - "fill_holes_and_rerun"
     - "reduce_extension_distance"
     - "exclude_face_from_batch"
     - "manual_review"
@@ -537,7 +535,6 @@ DEFERRED_RESPONSE_SCHEMA = {
                 "type": "string",
                 "enum": [
                     "manual_trim_in_cad",
-                    "fill_holes_and_rerun",
                     "reduce_extension_distance",
                     "exclude_face_from_batch",
                     "manual_review",

@@ -21,10 +21,9 @@ traversal, failure handling, or recovery logic.
 
 The pipeline takes **a single STEP file** containing the surface to extend.
 
-- **The surface must have no holes.** Before running the pipeline, fill any
-  interior holes in the source CAD. A surface with holes has extra boundary
-  edges that would be misinterpreted as extendable, and the extension will
-  be applied to the wrong contours.
+- **The surface may contain holes.** The pipeline detects all boundary
+  loops topologically and extends only the **outermost one** (the loop
+  with the largest bounding box). Hole boundaries are ignored.
 
 
 ## What this does
@@ -87,7 +86,7 @@ surface is already flat, so a flat strip is geometrically correct.
 ## Architecture
 
 ```text
-STEP surface (single file, no holes)
+STEP surface (single file)
         |
         v
 FreeCAD / Python geometry core
@@ -163,8 +162,7 @@ Optional: local-LLM diagnosis
 
 ### Pipeline
 
-- Boundary detection assumes a clean, connected outer boundary — no holes.
-  Fill any holes in the source CAD before running.
+- Boundary detection assumes a clean, connected outer boundary.
 - OpenCascade's topological naming is unstable across recomputes — faces
   are tracked by geometric fingerprint (surface type, center of mass,
   bounding box, area) rather than by index.
@@ -284,7 +282,7 @@ The folder must contain exactly one STEP file. Filenames do not need tofollow a 
 
 ```bash
 surface-assistant run examples/test3 --strategy per_face --ai
-
+surface-assistant run examples/v1_with_holes/test3 --strategy per_face --ai
 ```
 
 The pipeline always produces two files:
@@ -295,6 +293,7 @@ The pipeline always produces two files:
 # Whole-surface
 ```bash
 surface-assistant run examples/test3 --strategy whole_surface --ai
+surface-assistant run examples/v1_with_holes/test3 --strategy whole_surface --ai
 
 ```
 

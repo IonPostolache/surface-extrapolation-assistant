@@ -18,7 +18,7 @@ The motivating use case is stamping die-face prep, where this extension
 step is repeated for every boundary face on every part.
 
 ## Final architecture
-STEP surface (single file, no holes)
+STEP surface (single file)
 |
 v
 topology.get_boundary_faces_no_curve

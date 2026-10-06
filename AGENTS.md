@@ -38,11 +38,8 @@ Expected: FreeCAD version: 1 1 and Faces: 6.
 ## Input contract
 The pipeline takes one STEP file containing the surface.
 
-No boundary-curve file is needed — the outer boundary is detected
-topologically.
+No boundary-curve file is needed — the outer boundary is detected topologically.
 
-The surface must have no holes. Fill interior holes in the source
-CAD before running.
 
 ## CLI usage
 ```bash
