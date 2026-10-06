@@ -194,17 +194,23 @@ class BatchReport:
 # ---------------------------------------------------------------------------
 # Batch runner
 # ---------------------------------------------------------------------------
-def _try_render_png(output_fcstd: Path | None) -> Path | None:
-    """Render the FCStd output to a PNG for the LLM. Returns None on failure."""
+def _try_render_grid(output_fcstd: Path | None) -> Path | None:
+    """Render all standard views as a single grid PNG for the LLM."""
     if output_fcstd is None:
         return None
     try:
-        png_path = Path(output_fcstd).with_suffix(".png")
-        from surface_assistant.io import render_fcstd_to_png_subprocess
-        if render_fcstd_to_png_subprocess(Path(output_fcstd), png_path):
-            return png_path
+        grid_path = Path(output_fcstd).with_name(
+            Path(output_fcstd).stem + "_grid.png"
+        )
+        from surface_assistant.io import make_screenshot_grid
+        if make_screenshot_grid(
+            Path(output_fcstd),
+            grid_path,
+            views=("iso", "front", "top", "left", "back", "bottom"),
+        ):
+            return grid_path
     except Exception as exc:
-        print(f"[batch] PNG render failed: {exc}")
+        print(f"[batch] grid render failed: {exc}")
     return None
 
 
@@ -216,6 +222,7 @@ def run_batch(
     max_correction_passes: int = 1,
     doc_name: str = "_BatchSurface",
     use_llm: bool = False, 
+    ai_verbose: bool = False,
     output_fcstd: Path | None = None,
     strategy: str = "per_face",   # "per_face" or "whole_surface"
 ) -> BatchReport:
@@ -247,6 +254,12 @@ def run_batch(
     )
 
     doc_surface = None
+
+    if strategy not in ("per_face", "whole_surface"):
+        raise ValueError(
+            f"Unknown strategy: {strategy!r}. "
+            f"Choose 'per_face' or 'whole_surface'."
+        )
 
     try:
         # --- Load the surface (common to both strategies) ---
@@ -431,19 +444,20 @@ def run_batch(
         if use_llm and report.join_result is not None:
             if report.join_result.status != JoinStatus.SUCCESS:
                 from surface_assistant.llm import diagnose
-                png_path = _try_render_png(output_fcstd)
+                grid_path = _try_render_grid(output_fcstd)
                 report.llm_diagnosis = diagnose(
                     report.join_result,
                     report.results,
-                    image_path=png_path,
+                    image_path=grid_path,
                 )
             elif report.deferred_faces:
                 from surface_assistant.llm import diagnose_deferred_faces
-                png_path = _try_render_png(output_fcstd)
+                grid_path = _try_render_grid(output_fcstd)
                 report.llm_diagnosis = diagnose_deferred_faces(
                     report.deferred_faces,
                     report.results,
-                    image_path=png_path,
+                    image_path=grid_path,
+                    verbose=ai_verbose,
                 )
 
         return report

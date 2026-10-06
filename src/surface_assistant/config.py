@@ -61,7 +61,7 @@ class JoinConfig:
 @dataclass
 class LLMConfig:
     enabled: bool = True
-    provider: str = "ollama"
+    provider: str = "lmstudio"
     endpoint: str = "http://localhost:11434"
     model: str = "qwen2.5-coder:7b"
     timeout_seconds: int = 60
@@ -128,9 +128,9 @@ def load_config() -> AppConfig:
         ),
         llm=LLMConfig(
             enabled=bool(lm.get("enabled", True)),
-            provider=str(lm.get("provider", "ollama")),
-            endpoint=str(lm.get("endpoint", "http://localhost:11434")),
-            model=str(lm.get("model", "qwen2.5-coder:7b")),
+            provider=str(lm.get("provider", "lmstudio")),
+            endpoint=str(lm.get("endpoint", "http://localhost:1234/v1")),
+            model=str(lm.get("model", "qwen3-vl-30b-a3b-instruct")),
             timeout_seconds=int(lm.get("timeout_seconds", 60)),
             temperature=float(lm.get("temperature", 0.2)),
         ),

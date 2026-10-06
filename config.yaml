@@ -22,10 +22,11 @@ join:
 
 llm:
   enabled: true
-  provider: "lmstudio"            # "ollama" or "lmstudio"
-  endpoint: "http://localhost:11434"
-  model: "qwen2.5-coder:7b"
-  timeout_seconds: 60
+  provider: "lmstudio"
+  endpoint: "http://localhost:1234/v1"
+  model: "qwen3-vl-30b-a3b-instruct"  # for our usecase, we use the instruction-tuned model
+  # model: "qwen3-vl-30b-a3b-thinking"
+  timeout_seconds: 120
   temperature: 0.2
 
 logging:

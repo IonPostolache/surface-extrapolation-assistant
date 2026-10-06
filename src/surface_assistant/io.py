@@ -385,3 +385,91 @@ def _piece_outside_score(piece, boundary_edges, plane_normal, boundary_center):
     except Exception as exc:
         print(f"[io] point-in-polygon failed: {exc}")
         return None
+
+def make_screenshot_grid(
+    fcstd_path: Path,
+    output_png: Path,
+    views: tuple[str, ...] = ("iso", "front", "top", "left", "back", "bottom"),
+    cell_size: int = 512,
+) -> Path | None:
+    """Render multiple views and stitch them into a single grid PNG.
+
+    Layout:
+        6 views  → 3 columns × 2 rows
+        4 views  → 2 × 2
+        2 views  → 2 × 1
+        1 view   → single image
+
+    Each cell is labeled with the view name in the corner.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print("[io] Pillow not installed; skipping grid render")
+        return None
+
+    # Render each view to a temporary PNG
+    temp_png = output_png.with_suffix(".tmp.png")
+    if not render_fcstd_to_png_subprocess(
+        fcstd_path, temp_png, size=cell_size, views=views
+    ):
+        return None
+
+    # Collect the rendered files
+    if len(views) == 1:
+        rendered = [temp_png]
+    else:
+        rendered = [
+            temp_png.with_name(f"{temp_png.stem}_{v}{temp_png.suffix}")
+            for v in views
+        ]
+
+    images = []
+    for v, path in zip(views, rendered):
+        if not path.exists():
+            continue
+        try:
+            img = Image.open(path).convert("RGB")
+            images.append((v, img))
+        except Exception as exc:
+            print(f"[io] failed to open {path}: {exc}")
+
+    if not images:
+        print("[io] no images to stitch")
+        return None
+
+    # Decide grid layout
+    n = len(images)
+    if n == 1:
+        cols, rows = 1, 1
+    elif n == 2:
+        cols, rows = 2, 1
+    elif n <= 4:
+        cols, rows = 2, 2
+    else:
+        cols, rows = 3, 2
+
+    # Compute canvas size
+    cell_w = max(img.width for _, img in images)
+    cell_h = max(img.height for _, img in images)
+    canvas = Image.new("RGB", (cols * cell_w, rows * cell_h), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    for i, (view_name, img) in enumerate(images):
+        r, c = divmod(i, cols)
+        x = c * cell_w
+        y = r * cell_h
+        canvas.paste(img, (x, y))
+        # Label the cell
+        draw.text((x + 12, y + 12), view_name.upper(), fill="black")
+
+    canvas.save(output_png, "PNG")
+
+    # Clean up the temporary per-view files
+    for path in rendered:
+        try:
+            path.unlink()
+        except Exception:
+            pass
+
+    return output_png

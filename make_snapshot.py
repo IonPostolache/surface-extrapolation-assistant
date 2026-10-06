@@ -21,6 +21,8 @@ VIEW_METHODS = {
     "front": "viewFront",
     "top": "viewTop",
     "left": "viewLeft",
+    "back": "viewRear",
+    "bottom": "viewBottom",
 }
 
 

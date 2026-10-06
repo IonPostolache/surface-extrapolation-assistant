@@ -91,12 +91,14 @@ class LLMDiagnosis:
 # ---------------------------------------------------------------------------
 
 def _config() -> dict[str, Any]:
+    from surface_assistant.config import load_config
+    cfg = load_config()
     return {
-        "base_url": os.environ.get("LLM_BASE_URL", "http://localhost:1234/v1"),
-        "model": os.environ.get("LLM_MODEL", "qwen3-coder-30b-a3b-instruct"),
-        "api_key": os.environ.get("LLM_API_KEY", "lm-studio"),
-        "timeout": int(os.environ.get("LLM_TIMEOUT", "120")),
-        "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.2")),
+        "base_url": cfg.llm.endpoint,
+        "model": cfg.llm.model,
+        "api_key": os.environ.get("LLM_API_KEY", "lm-studio"),  # secret
+        "timeout": cfg.llm.timeout_seconds,
+        "temperature": cfg.llm.temperature,
     }
 
 
@@ -166,6 +168,12 @@ Key signals:
     - "ratio_suspicious": true on a face means the extension distance
       exceeded the face's own extent, indicating a likely wrong direction.
     - "open_edge_count" counts edges in the shell not shared by two faces.
+
+Key signals in the image:
+    - A grid of six views labeled ISO, FRONT, TOP, LEFT, BACK, BOTTOM.
+    - Use them together to understand the 3D shape: e.g., check the
+      top view for plan symmetry, the front/back for vertical curvature,
+      and the isometric for overall form.
 
 Your job:
     1. Explain, in one or two sentences, the most likely geometric cause
@@ -591,6 +599,7 @@ def diagnose_deferred_faces(
                 "schema": DEFERRED_RESPONSE_SCHEMA,
             },
         },
+        "max_tokens": 4096, 
     }
 
     try:
@@ -617,7 +626,7 @@ def diagnose_deferred_faces(
         return LLMDiagnosis(
             status=DiagnosisStatus.LLM_ERROR,
             error_message=str(exc),
-        )
+        )    
 
     if r.status_code != 200:
         return LLMDiagnosis(
@@ -628,12 +637,17 @@ def diagnose_deferred_faces(
     try:
         response_json = r.json()
         raw = response_json["choices"][0]["message"]["content"]
+        choice = response_json["choices"][0]
+        if not raw and choice.get("message", {}).get("reasoning_content"):
+            print(f"[ai debug] WARNING: content empty but reasoning_content present")
+            print(f"[ai debug] reasoning (first 200 chars): "
+                  f"{choice['message']['reasoning_content'][:200]}")
     except (KeyError, IndexError, ValueError) as exc:
         return LLMDiagnosis(
             status=DiagnosisStatus.INVALID_RESPONSE,
             error_message=f"unexpected response shape: {exc}",
             raw_response=r.text[:500],
-        )
+        )  
 
     if verbose:
         print("=== raw AI response (deferred) ===")

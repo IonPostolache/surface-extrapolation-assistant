@@ -282,9 +282,8 @@ The folder must contain exactly one STEP file. Filenames do not need to
 follow a naming pattern:
 
 ```bash
-surface-assistant run-folder examples/test3 \
-  --ai -o examples/test3/extended.FCStd \
-  --screenshots --views iso,front,top,left
+surface-assistant run-folder examples/test3 --strategy per_face --ai -o examples/test3/per_face.FCStd
+
 ```
 The PNGs are written beside the FCStd output as extended_iso.png,
 extended_front.png, etc. Use --views front for a single screenshot named
@@ -294,16 +293,12 @@ extended.png. Screenshot generation is opt-in and requires --output.
 # Whole-surface
 ```bash
 surface-assistant run-folder examples/test3 --strategy whole_surface --ai -o examples/test3/whole_surface.FCStd
-```
 
+```
 
 Run with an explicit file
 ```bash
-surface-assistant run model.step \
-  --distance 5 \
-  --tolerance 2.0 \
-  --ai \
-  -o output.FCStd
+surface-assistant run model.step --distance 5 --tolerance 2.0 --ai -o output.FCStd
 ```
   
 Why this project
