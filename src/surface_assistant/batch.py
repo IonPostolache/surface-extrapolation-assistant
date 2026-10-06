@@ -295,14 +295,26 @@ def run_batch(
 
             if whole_ext is not None:
                 report.extended_faces.append(whole_ext)
+
+                # Combine ribbon compound + original surface + interior faces
+                # so the result is self-contained (same as per_face strategy).
+                boundary_indices = {bf.index for bf in get_boundary_faces_no_curve(shape)}
+                interior_faces = [
+                    Part.Face(f) for i, f in enumerate(shape.Faces)
+                    if i not in boundary_indices
+                ]
+                parts = [whole_ext, shape] + interior_faces
+                combined = Part.makeCompound(parts)
+
                 report.join_result = JoinResult(
                     status=JoinStatus.SUCCESS,
-                    input_face_count=1,
-                    method_used="whole_surface",
-                    sewed_shell=whole_ext,
+                    input_face_count=len(parts),
+                    method_used="whole_surface+original",
+                    sewed_shell=combined,
                     open_edge_count=0,
                 )
-                print("[batch] whole-surface extension succeeded")
+                print(f"[batch] whole-surface extension succeeded "
+                    f"({len(parts)} shapes in compound)")
             else:
                 report.join_result = JoinResult(
                     status=JoinStatus.FAILED,
@@ -427,11 +439,16 @@ def run_batch(
                             extended_shape = Part.makeCompound(trim_result.trimmed_faces)
                             extended_count = len(trim_result.trimmed_faces)
 
-                        combined = Part.makeCompound([extended_shape] + valid_interior)
+                        # Combine: extended faces + original surface + interior
+                        combined = Part.makeCompound(
+                            [extended_shape, shape] + valid_interior
+                        )
                         extended_join.sewed_shell = combined
                         extended_join.open_edge_count = 0
-                        extended_join.input_face_count = extended_count + len(valid_interior)
-                        extended_join.method_used = "compound"
+                        extended_join.input_face_count = (
+                            extended_count + 1 + len(valid_interior)
+                        )
+                        extended_join.method_used = "compound+original"
                         extended_join.status = JoinStatus.SUCCESS
                     except Exception as exc:
                         print(f"[batch] compound failed: {exc}")
@@ -439,29 +456,37 @@ def run_batch(
                 report.join_result = extended_join
 
         # --- Common tail: save + AI diagnosis (runs for BOTH strategies) ---
+        # 1. Save the FCStd (unconditional on -o)
         if output_fcstd is not None:
             try:
                 from surface_assistant.io import save_extended_faces
                 save_extended_faces(report, Path(output_fcstd))
+                print(f"[batch] saved {output_fcstd}")
             except Exception as exc:
                 print(f"[batch] FCStd save failed: {exc}")
 
+        # 2. Render the grid screenshot (unconditional on -o)
+        grid_path = None
+        if output_fcstd is not None:
+            grid_path = _try_render_grid(output_fcstd)
+            if grid_path is not None:
+                print(f"[batch] grid screenshot saved to {grid_path}")
+
+        # 3. AI diagnosis (only if --ai and something to diagnose)
         if use_llm and report.join_result is not None:
             if report.join_result.status != JoinStatus.SUCCESS:
                 from surface_assistant.llm import diagnose
-                grid_path = _try_render_grid(output_fcstd)
                 report.llm_diagnosis = diagnose(
                     report.join_result,
                     report.results,
-                    image_path=grid_path,
+                    image_path=grid_path,      # reuse the grid from step 2
                 )
             elif report.deferred_faces:
                 from surface_assistant.llm import diagnose_deferred_faces
-                grid_path = _try_render_grid(output_fcstd)
                 report.llm_diagnosis = diagnose_deferred_faces(
                     report.deferred_faces,
                     report.results,
-                    image_path=grid_path,
+                    image_path=grid_path,      # reuse the grid from step 2
                     verbose=ai_verbose,
                 )
 
