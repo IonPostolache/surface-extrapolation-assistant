@@ -218,6 +218,28 @@ at the geometry. The `image_visible` boolean is the proof that the
 vision path worked.
 
 
+### 10. Hole handling via outermost-loop selection
+
+**Hypothesis:** The pipeline originally required hole-free surfaces because
+`get_outer_boundary_edges` returns every boundary edge, mixing the outer
+perimeter with hole boundaries. Extending both produced garbage across the
+holes.
+
+**Fix:** Group boundary edges into connected loops (`get_boundary_loops`)
+and select only the loop with the largest bounding box
+(`get_outer_perimeter_loop`). The pipeline now treats holes as interior
+features and extends only the outer perimeter.
+
+**Why bounding-box volume, not perimeter length:** A hole with many small
+scallops can have a longer perimeter than a simple outer rectangle. The
+bounding box is a more robust "outerness" signal for typical stamped
+panels.
+
+**Tradeoff:** For surfaces with multiple disconnected outer contours, the
+pipeline picks the largest and silently drops the rest. This is the same
+behavior as before, but now it's explicit and documented.
+
+
 ## Findings about FreeCAD's public API
 
 These are the load-bearing technical conclusions, independent of the
@@ -274,8 +296,9 @@ extended and trimmed automatically:
 | 45 | 5 mm | 5 mm | 196.43 → 77.77 mm² |
 | 47 | 5 mm | 5 mm | 698.20 → 113.10 mm² |
 
-The output is a joined compound with no open edges, plus the original
+The output is a joined compound, plus the original
 surface and untrimmed extension for the deferred face.
+Holes are ignored (only the outermost boundary is extended).
 
 ## What a production tool would need
 

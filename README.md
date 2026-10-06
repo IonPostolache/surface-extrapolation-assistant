@@ -277,7 +277,7 @@ Everything else (endpoint, model, timeout, temperature) is read from
 surface-assistant inspect model.step
 ```
 
-### Run the pipeline on a folder
+### Run the pipeline
 The folder must contain exactly one STEP file. Filenames do not need tofollow a naming pattern:
 
 ```bash
@@ -296,6 +296,15 @@ surface-assistant run examples/test3 --strategy whole_surface --ai
 surface-assistant run examples/v1_with_holes/test3 --strategy whole_surface --ai
 
 ```
+
+## Strategies
+
+Two strategies are available via `--strategy`:
+
+| Strategy | What it does |
+|----------|--------------|
+| `per_face` (default) | Extends each boundary face independently, trims each extension back to the outer boundary, joins the trimmed bands with the original and interior faces. Produces clean per-face results. |
+| `whole_surface` | Builds one ribbon per boundary edge of the whole surface and compounds them with the original and interior faces. Handles concave and multi-loop boundaries but produces slightly coarser geometry at corners. |
 
 
 ## Sample output
@@ -338,6 +347,8 @@ passes through deterministic validation before touching the model.
 It also documents, honestly, where FreeCAD's public API hits its limits when
 compared to a commercial kernel like CATIA's — and what a pythonocc-based
 implementation would need to close the remaining gap.
+
+The LLM receives both a structured diagnostic (JSON) and a rendered 6-view grid of the result, and returns a schema-validated diagnosis and a bounded recovery action. The image is mandatory in the response schema, so the model cannot fake attention to geometry it hasn't seen.
 
 > **Design decisions and abandoned approaches:** see
 > [`docs/design_log.md`](docs/design_log.md) for a full record of what

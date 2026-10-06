@@ -45,6 +45,7 @@ No boundary-curve file is needed — the outer boundary is detected topologicall
 ```bash
 # Folder with exactly one STEP file
 surface-assistant run examples/test3 --strategy per_face --ai
+surface-assistant run examples/test3 --strategy whole_surface --ai
 
 # Inspect a surface without extending
 surface-assistant inspect model.step
@@ -108,10 +109,12 @@ cli.py — typer CLI
 
 ## Output
 
-The pipeline produces:
-- `<name>.FCStd` — openable in FreeCAD.
-- `<name>_grid.png` — a 6-view grid (ISO, FRONT, TOP, LEFT, BACK,
-  BOTTOM) in a single image.
+`surface-assistant run <folder>` writes:
+
+- `<folder>/<strategy>.FCStd` — openable in FreeCAD.
+- `<folder>/<strategy>_grid.png` — a 6-view grid image.
+
+Where `<strategy>` is `per_face` (default) or `whole_surface`.
 
 
 ## Known limitations to keep in mind

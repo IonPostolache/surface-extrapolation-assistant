@@ -68,7 +68,7 @@ def render_fcstd_to_png_subprocess(
     fcstd_path = Path(fcstd_path).resolve()
     output_png = Path(output_png).resolve()
 
-    snapshot_script = Path(__file__).resolve().parents[2] / "make_snapshot.py"
+    snapshot_script = Path(__file__).resolve().parents[2] / "snapshot_views.py"
     if not snapshot_script.is_file():
         print(f"[render] Snapshot script not found at {snapshot_script}")
         return False

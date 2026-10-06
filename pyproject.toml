@@ -5,18 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "surface-extrapolation-assistant"
 version = "0.1.0"
-description = "Automated boundary-face extrapolation for FreeCAD surfaces with local-LLM failure diagnosis"
+description = "Automated boundary-face extension for FreeCAD with a local vision-LLM diagnostic layer"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "Ion Postolache" }
 ]
-keywords = ["freecad", "cad", "surface", "extrapolation", "stamping", "llm", "ollama"]
+keywords = ["freecad", "cad", "surface", "extrapolation", "stamping", "llm", "lmstudio"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Manufacturing",
     "Topic :: Scientific/Engineering :: CAD",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
