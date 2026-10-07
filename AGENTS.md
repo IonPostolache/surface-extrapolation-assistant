@@ -38,12 +38,9 @@ Expected: FreeCAD version: 1 1 and Faces: 6.
 ## Input contract
 The pipeline takes one STEP file containing the surface.
 
-No boundary-curve file is needed — the outer boundary is detected topologically.
-
 
 ## CLI usage
 ```bash
-# Folder with exactly one STEP file
 surface-assistant run examples/test3 --strategy per_face --ai
 surface-assistant run examples/test3 --strategy whole_surface --ai
 
@@ -79,8 +76,6 @@ Do not run pip install freecad — FreeCAD is not pip-installable.
 Do not import FreeCAD before from surface_assistant import freecad_setup.
 The bootstrap module adds FreeCAD's bundled site-packages to sys.path.
 
-Do not assume the input STEP file has a boundary curve or is hole-free
-without checking.
 
 ## Architecture notes
 step_io.py — STEP loading and folder resolution

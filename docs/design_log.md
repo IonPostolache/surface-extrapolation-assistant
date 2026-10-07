@@ -9,7 +9,7 @@ isn't visible in the final code.
 
 Replicate a small piece of CATIA V5's surface-prep workflow in FreeCAD:
 
-> Given an imported surface (a die-face patch), extend its boundary
+> Given an imported surface, extend its boundary
 > faces outward in curvature by a target distance, trim the extensions
 > back to the surface's outer boundary, and join the result into a
 > single shell.
@@ -17,227 +17,91 @@ Replicate a small piece of CATIA V5's surface-prep workflow in FreeCAD:
 The motivating use case is stamping die-face prep, where this extension
 step is repeated for every boundary face on every part.
 
-## Final architecture
-STEP surface (single file)
-|
-v
-topology.get_boundary_faces_no_curve
-| - detect outer boundary edges topologically
-| - identify boundary faces
-v
-extrapolation.extrapolate_face
-| - choose strategy by surface type
-| - plane: ruled strip
-| - BSpline / cylinder: curvature ribbon
-v
-io.trim_face_to_outside_boundary
-| - ribbon split by outer boundary
-| - classify pieces by 2D point-in-polygon score
-v
-batch.run_batch
-| - keep trimmed band if trim reduced area
-| - else keep original + untrimmed extension (DEFERRED)
-| - join with interior faces
-v
-io.save_extended_faces → extended.FCStd
-llm.diagnose / diagnose_deferred_faces (optional)
+## Module map
 
-text
+See the [README](../README.md) for the conceptual pipeline diagram.
+
+
+| Stage | Module / function |
+|---|---|
+| Detect outer boundary edges topologically, identify boundary faces | `topology.get_boundary_faces_no_curve` |
+| Choose extension strategy by surface type (plane → ruled strip, BSpline/cylinder → curvature ribbon) | `extrapolation.extrapolate_face` |
+| Split the extension by the outer boundary, classify pieces by 2D point-in-polygon score | `io.trim_face_to_outside_boundary` |
+| Keep trimmed band if the trim reduced area, else keep original + untrimmed extension (`DEFERRED`); join with interior faces | `batch.run_batch` |
+| Save result, optional LLM diagnosis on failure/deferred faces | `io.save_extended_faces`, `llm.diagnose` / `llm.diagnose_deferred_faces` |
+
 
 ## Approaches tried and abandoned
 
-### 1. Parametric `Surface::Extend` with ratio calibration
+### 1. Parametric Surface::Extend with ratio calibration
 
-**Hypothesis:** `Surface::Extend` extends a face outward in curvature.
-Calibrate the ratio so the extension hits a target distance in mm.
+Hypothesis: Surface::Extend extends a face outward in curvature. Calibrate the ratio so the extension hits a target distance in mm.
 
-**Why it was tried:** It's the "native" FreeCAD way to extend a surface.
+Why it was tried: It's the "native" FreeCAD way to extend a surface.
 
-**Why it was abandoned:** `Surface::Extend` operates on the face's
-underlying parametric surface. For a BSpline face, extending the
-parametric range reveals geometry that was trimmed away in the source
-data. The extension "grows" in every direction, including back into
-the interior of the part. On simple planar faces it works; on curved
-BSplines it produces untrimmed geometry that is not a face extension
-in any useful sense.
+Why it was abandoned: Surface::Extend operates on the face's underlying parametric surface. For a BSpline face, extending the parametric range reveals geometry that was trimmed away in the source data. The extension "grows" in every direction, including back into the interior of the part. On simple planar faces it works; on curved BSplines it produces untrimmed geometry that is not a face extension in any useful sense.
 
 ### 2. Ruled strips for all faces
 
-**Hypothesis:** For each boundary edge, build a ruled surface between
-the edge and an offset copy of the edge.
+Hypothesis: For each boundary edge, build a ruled surface between the edge and an offset copy of the edge.
 
-**Why it was tried:** Avoids `Surface::Extend` entirely; the extension
-is built geometrically, not parametrically.
+Why it was tried: Avoids Surface::Extend entirely; the extension is built geometrically, not parametrically.
 
-**Why it was abandoned (for curved faces):** A ruled surface between
-two curves is a flat strip. On a curved face, the extension should
-follow the face's curvature, not continue straight. Ruled strips
-produce visibly wrong geometry at corners and along curved boundaries.
+Why it was abandoned (for curved faces): A ruled surface between two curves is a flat strip. On a curved face, the extension should follow the face's curvature, not continue straight. Ruled strips produce visibly wrong geometry at corners and along curved boundaries.
 
-Still used for **planar faces**, where a flat strip is geometrically
-correct.
+Still used for planar faces, where a flat strip is geometrically correct.
 
-### 3. Untrim-guard via `Shape.common()`
+### 3. Boolean/slab-based trims against the interior boundary
 
-**Hypothesis:** Extend the face parametrically (over-extending, revealing
-the untrimmed parent), then trim the result back to a "keep region"
-defined as `original_face ∪ ruled_border`.
+Hypothesis: Three variations on the same idea — clip the over-extended face back to a "keep region" defined by the interior boundary, using Shape.common(), a slab cut from the projected boundary polygon, and per-interior-face slab cuts.
 
-**Why it was tried:** A safety net around approach #1 — accept the
-un-trimmed extension and clip it back with a boolean.
+Why it was tried: Booleans are generally more reliable than splits for surface geometry, and each variation tried to fix the previous one's failure mode.
 
-**Why it was abandoned:** When `Surface::Extend` un-trims a face, the
-extended surface **moves in 3D space** (it grows outward in a different
-direction than the original face sits). `Shape.common()` between the
-extended surface and the keep-region returns nothing useful, because
-the two shapes don't overlap. The trim-guard never fires.
+Why all three were abandoned: The common thread is that the "correct" extension is coplanar with or directly adjacent to the interior geometry it needs to be trimmed against, not spatially separated from it:
 
-### 4. Slab cut by the interior boundary
+Shape.common() failed because the un-trimmed extension moves in 3D space relative to the original face, so the two shapes don't overlap and the boolean returns nothing.
+A slab from the projected (planarized) interior boundary lost the fillet curvature at corners, cutting into correct geometry along the straightened chords.
+Per-interior-face slabs, built thick enough to guarantee they crossed the extension, also sliced through the correct extension because it sits in the same surface plane as the interior faces — there was no "safe side" to extrude from. A one-sided version failed the same way, since the interior faces' normals point away from the extension's territory, not into it.
 
-**Hypothesis:** Build a solid slab from the projected interior boundary
-polygon. Cut the extended face with the slab to remove the interior
-spill.
+### 4. Ribbon split by the interior boundary wire
 
-**Why it was tried:** Cuts are more reliable than splits for
-surface geometry. A solid slab has volume, so `Shape.cut()` works
-on any orientation.
+Hypothesis: Build a closed ribbon from the full interior boundary wire and split the extended face by it — a single connected loop that should fully separate spill from correct extension.
 
-**Why it was abandoned:** The interior boundary is a **curved 3D
-contour** (not planar). Projecting it onto a plane loses the fillet
-curvature at the corners — the projected polygon has straight chords
-where the real boundary curves. The slab cuts inside those chords,
-removing part of the correct extension along with the spill.
+Why it was tried: In principle the interior wire is the correct trim contour.
 
-### 5. Per-interior-face slab cuts
+Why it was abandoned: The split does produce two pieces, but neither corresponds to "spill vs. correct extension." The interior wire passes through the face in question rather than around it, so the split doesn't align with the intended geometry, and neither resulting piece scores as a clean "correct" region for the classifier to pick.
 
-**Hypothesis:** For each interior face, extrude it along its own normal
-into a solid slab. Cut the extended face with each slab in sequence.
-With 47 interior faces, the union of their slabs removes the spill
-everywhere it occurs.
+### 5. Second-pass trim for pathological faces
 
-**Why it was tried:** Exact — no projection, no chord approximation.
-Each slab follows the interior face's own geometry.
+Hypothesis: For faces where the first-pass trim had no effect, try a more sophisticated trim (shared-edge ribbon, interior-boundary slab, etc.).
 
-**Why it was abandoned:** The interior faces' slabs are 1000 mm thick
-by design (to guarantee they cross the extension regardless of
-orientation). But the "correct" extension sits in the **same surface
-plane** as the interior faces — it's coplanar with them, not below
-or above. So each slab removes a chunk of both the spill **and** the
-correct extension. After 46 cuts, the extended face was reduced from
-10354 mm² to 25 mm² — everything removed.
+Why it was tried: The remaining unresolved face needed something, and the pipeline had spare capacity.
 
-A one-sided slab (extruded only inward from the interior face) was
-tried as a follow-up. It produced the same result because the interior
-faces' normals point "up and out" of the surface; extruding inward
-pushes the slab into the extension's territory, not away from it.
+Why it was abandoned: Every second-pass approach either removed too much or too little. The final decision was to detect the failure and defer the face, rather than risk damaging the geometry. This is the current behavior — an unresolved face is reported as DEFERRED and left unchanged.
 
-### 6. Ribbon split by the interior boundary wire
+### 6. Whole-surface strategy (alternative)
 
-**Hypothesis:** Build a closed ribbon from the interior boundary wire
-(48 edges, closed=True), split the extended face by it.
+Hypothesis: Instead of extending each boundary face independently, build a single ribbon from the entire outer boundary wire, so corners are handled by the loft instead of by joining separate extensions.
 
-**Why it was tried:** The interior boundary wire is a single connected
-loop that fully surrounds the interior region — the correct trim
-contour in principle.
+Result: succeeded after switching from a single lofted ribbon to one ribbon per boundary edge — the single-loft version folded over itself on concave boundaries, where the offset curve crosses itself. The per-edge version handles concave and multi-loop boundaries naturally, at the cost of being slower and sometimes not aligning perfectly at corners; it's the better choice when per-face extension leaves visible spill on a complex or concave boundary.
 
-**Why it was abandoned:** The split **does** produce two pieces
-(7746 and 2607 mm²), but neither corresponds to "spill vs. correct
-extension". The interior wire passes **through** face 0, not around
-it. When face 0's extension grows outward from its inner contour, the
-interior wire is at that inner contour — so the split separates the
-extension into two regions that don't match the intended geometry.
-Neither piece has a positive point-in-polygon score, so the
-classifier can't pick the right one.
+### 7. Vision-enabled LLM diagnosis
 
-### 7. Second-pass trim for pathological faces
+Hypothesis: A text-only diagnostic (structured JSON with face metrics and error messages) is enough for a local LLM to explain a deferred face. A vision-language model that also sees the geometry would give better diagnoses.
 
-**Hypothesis:** For faces where the first-pass trim had no effect,
-try a more sophisticated trim (shared-edge ribbon, interior-boundary
-slab, etc.).
+Result: confirmed. The pipeline renders a 6-view grid (ISO, FRONT, TOP, LEFT, BACK, BOTTOM) as a single PNG and sends it alongside the JSON payload.
 
-**Why it was tried:** Face 0 needed *something*, and the pipeline
-had spare capacity.
+Implementation detail: the request uses LM Studio's OpenAI-compatible /v1/chat/completions endpoint with response_format.type = json_schema. The schema forces the model to return image_visible and image_description alongside diagnosis, confidence, and recommended_actions — without mandatory image fields, a model can produce a plausible-sounding diagnosis from text alone and never actually look at the geometry. The image_visible boolean is the proof the vision path worked.
 
-**Why it was abandoned:** Every second-pass approach either removed
-too much (per-face slabs) or too little (shared-edge ribbons). The
-final decision was to **detect the failure and defer the face**,
-rather than risk damaging the geometry. This is the current
-behavior — face 0 is reported as `DEFERRED` and left unchanged.
+### 8. Hole handling via outermost-loop selection
 
+Hypothesis: The pipeline originally required hole-free surfaces because get_outer_boundary_edges returns every boundary edge, mixing the outer perimeter with hole boundaries. Extending both produced garbage across the holes.
 
-### 8. Whole-surface strategy (alternative)
+Fix: Group boundary edges into connected loops (get_boundary_loops) and select only the loop with the largest bounding box (get_outer_perimeter_loop). The pipeline now treats holes as interior features and extends only the outer perimeter.
 
-**Hypothesis:** Instead of extending each boundary face independently,
-build a single ribbon from the entire outer boundary wire, so corners
-are handled by the loft instead of by joining separate extensions.
+Why bounding-box volume, not perimeter length: A hole with many small scallops can have a longer perimeter than a simple outer rectangle. The bounding box is a more robust "outerness" signal for typical stamped panels.
 
-**Result on test3:** succeeded after the implementation changed from a
-single lofted ribbon to one ribbon per boundary edge. The initial
-loft-based version folded over itself in the concave "keyhole" region
-at the bottom of the part — the interpolated offset curve crossed
-itself and the loft between the boundary wire and the offset wire
-produced a folded surface.
-
-The per-edge version processes each boundary edge independently and
-returns a compound of ribbons. This handles concave and multi-loop
-boundaries naturally: 18 of 18 boundary edges produce ribbons, no
-folding.
-
-**Tradeoff:** the per-edge version is slower (each edge requires its
-own ribbon loft) and adjacent ribbons may not align perfectly at
-corners. The per-face strategy is still the default for clean per-face
-results.
-
-**When it's a good fit:** surfaces with complex or concave outer
-boundaries where per-face extension leaves visible spill.
-
-
-### 9. Vision-enabled LLM diagnosis
-
-**Hypothesis:** A text-only diagnostic (structured JSON with face
-metrics and error messages) is enough for a local LLM to explain a
-deferred face. A vision-language model that also sees the geometry
-would give better diagnoses.
-
-**Result:** confirmed. The pipeline renders a 6-view grid (ISO, FRONT,
-TOP, LEFT, BACK, BOTTOM) as a single PNG and sends it alongside the
-JSON payload. The model's response includes an `image_description`
-field; on test3 it produced a correct description of the multi-view
-drawing, which proves the image reached the model and was used.
-
-**Implementation detail:** the request uses LM Studio's OpenAI-compatible
-`/v1/chat/completions` endpoint with `response_format.type = json_schema`.
-A JSON schema forces the model to return `image_visible` and
-`image_description` alongside `diagnosis`, `confidence`, and
-`recommended_actions`. This forces the model to attend to the image and
-makes the attention auditable.
-
-**Why this matters:** without the mandatory image fields, a model can
-produce a plausible-sounding diagnosis from text alone and never look
-at the geometry. The `image_visible` boolean is the proof that the
-vision path worked.
-
-
-### 10. Hole handling via outermost-loop selection
-
-**Hypothesis:** The pipeline originally required hole-free surfaces because
-`get_outer_boundary_edges` returns every boundary edge, mixing the outer
-perimeter with hole boundaries. Extending both produced garbage across the
-holes.
-
-**Fix:** Group boundary edges into connected loops (`get_boundary_loops`)
-and select only the loop with the largest bounding box
-(`get_outer_perimeter_loop`). The pipeline now treats holes as interior
-features and extends only the outer perimeter.
-
-**Why bounding-box volume, not perimeter length:** A hole with many small
-scallops can have a longer perimeter than a simple outer rectangle. The
-bounding box is a more robust "outerness" signal for typical stamped
-panels.
-
-**Tradeoff:** For surfaces with multiple disconnected outer contours, the
-pipeline picks the largest and silently drops the rest. This is the same
-behavior as before, but now it's explicit and documented.
+Tradeoff: For surfaces with multiple disconnected outer contours, the pipeline picks the largest and silently drops the rest.
 
 
 ## Findings about FreeCAD's public API
@@ -280,56 +144,6 @@ specific pipeline:
    approach was tried with projected (planar) polygons, and why
    that lost fillet accuracy.
 
-## What the pipeline does correctly
-
-Seven of eight boundary faces on the test part (`Part3v3.stp`) are
-extended and trimmed automatically:
-
-| Face | Requested | Achieved | Trim result |
-|------|-----------|----------|-------------|
-| 0 | 5 mm | 5 mm | DEFERRED (trim had no effect) |
-| 1 | 5 mm | 5 mm | 88.63 → 32.91 mm² |
-| 17 | 5 mm | 5 mm | 88.63 → 32.91 mm² |
-| 18 | 5 mm | 5 mm | 1003.10 → 203.87 mm² |
-| 30 | 5 mm | 5 mm | 1003.09 → 203.87 mm² |
-| 39 | 5 mm | 5 mm | 196.44 → 77.78 mm² |
-| 45 | 5 mm | 5 mm | 196.43 → 77.77 mm² |
-| 47 | 5 mm | 5 mm | 698.20 → 113.10 mm² |
-
-The output is a joined compound, plus the original
-surface and untrimmed extension for the deferred face.
-Holes are ignored (only the outermost boundary is extended).
-
-## What a production tool would need
-
-To fully replicate CATIA's "extrapolate in curvature" with edge
-sub-selection:
-
-1. **Parent-surface metadata on every imported face.** FreeCAD's
-   STEP importer does not preserve it. `pythonocc`'s
-   `BRep_Tool::Surface(face)` exposes the underlying `Geom_Surface`,
-   which is one step closer.
-
-2. **Direct access to `Geom_BSplineSurface::Extend()`.** This extends
-   the parent surface exactly as CATIA does. FreeCAD's Python API
-   does not expose this; `pythonocc` does.
-
-3. **Explicit trim-wire construction.** Build the new face from the
-   extended parent surface and a wire that traces
-   `original_boundary + extension`. This requires 2D work in the
-   surface's parameter space.
-
-4. **Corner handling as a first-class operation.** Where two
-   extension ribbons meet at a corner, they must be stitched or
-   mitered — not left as separate pieces that happen to touch.
-
-5. **A robust slicing kernel.** Slicing a large BSpline by a curved
-   3D contour is exactly the operation that failed repeatedly. The
-   commercial kernels do this reliably; FreeCAD's does not.
-
-Steps 1–3 are the crux. Everything else is polish. `pythonocc` gives
-access to all three; whether it gives *reliable* access is a question
-that would need its own evaluation.
 
 ## Why the LLM layer exists
 
@@ -352,47 +166,9 @@ sent to the model, the schema of the response, and the allow-list of
 actions — and conclude that the model's output cannot corrupt the
 geometry.
 
-## What I'd do differently if starting over
-
-1. **Start with `pythonocc`, not FreeCAD.** The geometry kernel is the
-   same, but the API surface is much closer to what CATIA exposes.
-   FreeCAD's `Part` module wraps a subset of OCC in a way that hides
-   exactly the operations this project needs.
-
-2. **Evaluate the parent-surface access path first.** Before writing
-   any pipeline code, verify that the underlying surface of an
-   imported BSpline can be extended directly. If not, the whole
-   approach is a dead end.
-
-3. **Skip the ribbon approach entirely.** Ribbons approximate
-   curvature continuation; they don't reproduce it. A pipeline that
-   can't reproduce it should either do the untrim+extend+retrim
-   workflow exactly, or not attempt it.
-
-4. **Scope down to a single face type.** Planar-only or
-   cylinder-only would have been a more honest v1. Extending the
-   scope to BSplines before the planar path was fully solid cost
-   time without producing a better result.
-
-## Timeline notes
-
-- initial setup, boundary detection, ratio-calibrated
-  `Surface::Extend`. Ran into un-trimming on the first complex part.
-- explored ribbon, ruled-strip, and untrim-guard approaches.
-  Ribbons worked on simple cases but produced visibly wrong geometry
-  on curved faces.
-- built the LLM diagnostic layer, JSON schema, and CLI.
-- iterated on trimming. Every approach was tried at least
-  once, documented, and either shipped or abandoned.
-- Final state: 7/8 boundary faces handled automatically; face 0
-  deferred.
 
 ## References
 
 - CATIA V5 GSD Extrapolate command
 - FreeCAD `Surface::Extend` documentation
 - FreeCAD `Part::Slicing`, `BOPTools.SplitAPI` behavior
-- OpenCASCADE `Geom_BSplineSurface::Extend` (for the proposed
-  pythonocc rewrite)
-- (Optional) the two AI-generated design responses that were
-  consulted during the trim exploration, kept for future reference
