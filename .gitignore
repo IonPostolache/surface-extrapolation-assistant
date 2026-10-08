@@ -64,7 +64,7 @@ prof/
 *.FCBak
 *.fcstd
 
-# Model / large test files (optional — uncomment if needed)
+# Model / large test files
 *.step
 *.stp
 *.CATPart

@@ -361,7 +361,7 @@ def _piece_outside_score(piece, boundary_edges, plane_normal, boundary_center):
 def make_screenshot_grid(
     fcstd_path: Path,
     output_png: Path,
-    views: tuple[str, ...] = ("iso", "front", "top", "left", "back"),
+    views: tuple[str, ...] = ("iso", "front", "top", "left", "rear"),
     cell_size: int = 512,
 ) -> Path | None:
     """Render multiple views and stitch them into a single grid PNG.

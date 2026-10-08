@@ -211,7 +211,7 @@ def _try_render_grid(output_fcstd: Path | None) -> Path | None:
         if make_screenshot_grid(
             Path(output_fcstd),
             grid_path,
-            views=("iso", "front", "top", "left", "back"),
+            views=("iso", "front", "top", "left", "rear"),
         ):         
             return grid_path
     except Exception as exc:

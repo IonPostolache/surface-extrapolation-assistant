@@ -41,11 +41,11 @@ The pipeline takes one STEP file containing the surface.
 
 ## CLI usage
 ```bash
-surface-assistant run examples/test3 --strategy per_face --ai
-surface-assistant run examples/test3 --strategy whole_surface --ai
+surface-assistant run examples/0-flange --strategy per_face --ai
+surface-assistant run examples/0-flange --strategy whole_surface --ai
 
 # Inspect a surface without extending
-surface-assistant inspect model.step
+surface-assistant inspect examples/0-flange/0-surface.stp
 ```
 Flags:
 - `--distance` / `-d` — extension distance in mm

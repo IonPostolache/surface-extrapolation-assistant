@@ -88,11 +88,11 @@ Setup (FreeCAD install, venv, library path, optional local LLM) is in
 
 ```bash
 # Inspect a surface without extending
-surface-assistant inspect model.step
+surface-assistant inspect examples/0-flange/0-surface.stp
 
 # Run the pipeline — folder must contain exactly one STEP file
-surface-assistant run examples/test3 --strategy per_face --ai
-surface-assistant run examples/test3 --strategy whole_surface --ai
+surface-assistant run examples/0-flange --strategy per_face --ai
+surface-assistant run examples/0-flange --strategy whole_surface --ai
 ```
 
 The --ai flag is optional and requires a local LLM (LM Studio or Ollama) to be running. Without it, the pipeline runs fully deterministically and still reports deferred faces in the console.
@@ -119,7 +119,7 @@ AI diagnosis:
   actions: reduce_extension_distance, manual_review
 
 Deferred faces (left unchanged): [0]
-Saved to examples/test3/per_face.FCStd
+Saved to examples/0-flange/per_face.FCStd
 ```
 
 ## Why this project

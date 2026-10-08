@@ -171,9 +171,9 @@ Key signals:
     - "open_edge_count" counts edges in the shell not shared by two faces.
 
 Key signals in the image:
-    - A grid of six views labeled ISO, FRONT, TOP, LEFT, BACK, BOTTOM.
+    - A grid of six views labeled ISO, FRONT, TOP, LEFT, REAR, BOTTOM.
     - Use them together to understand the 3D shape: e.g., check the
-      top view for plan symmetry, the front/back for vertical curvature,
+      top view for plan symmetry, the front/rear for vertical curvature,
       and the isometric for overall form.
 
 Your job:

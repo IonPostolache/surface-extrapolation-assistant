@@ -89,7 +89,7 @@ Result: succeeded after switching from a single lofted ribbon to one ribbon per 
 
 Hypothesis: A text-only diagnostic (structured JSON with face metrics and error messages) is enough for a local LLM to explain a deferred face. A vision-language model that also sees the geometry would give better diagnoses.
 
-Result: confirmed. The pipeline renders a 6-view grid (ISO, FRONT, TOP, LEFT, BACK, BOTTOM) as a single PNG and sends it alongside the JSON payload.
+Result: confirmed. The pipeline renders a 6-view grid (ISO, FRONT, TOP, LEFT, REAR, BOTTOM) as a single PNG and sends it alongside the JSON payload.
 
 Implementation detail: the request uses LM Studio's OpenAI-compatible /v1/chat/completions endpoint with response_format.type = json_schema. The schema forces the model to return image_visible and image_description alongside diagnosis, confidence, and recommended_actions — without mandatory image fields, a model can produce a plausible-sounding diagnosis from text alone and never actually look at the geometry. The image_visible boolean is the proof the vision path worked.
 
